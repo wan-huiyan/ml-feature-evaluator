@@ -1,0 +1,18 @@
+{
+  "name": "ml-feature-evaluator",
+  "description": "Structured go/no-go evaluation for adding a new feature or data source to a production ML model. Runs a 10-step diagnostic (data quality pre-check, distribution, outcome gradient with leakage ceiling, bucket decomposition, coverage gaps, entropy with gain ratio, conditional mutual information, incremental CV AUC), 9-point temporal safety checklist, and produces a decision-backed implementation plan with monitoring spec.",
+  "version": "1.1.0",
+  "author": {
+    "name": "Huiyan Wan"
+  },
+  "repository": "https://github.com/wan-huiyan/ml-feature-evaluator",
+  "license": "MIT",
+  "keywords": [
+    "ml",
+    "feature-engineering",
+    "data-science",
+    "evaluation",
+    "go-no-go",
+    "temporal-safety"
+  ]
+}
