@@ -1,5 +1,8 @@
 ---
 name: ml-feature-evaluator
+version: 2.0.0
+date: 2026-03-23
+author: wan-huiyan
 description: Structured go/no-go evaluation for adding a new feature or data source to a production ML model. Use when the user asks "should we add X to the model?", discusses a new table/field/CRM source, wants to expand an existing categorical, or mentions coverage gaps. Runs a 10-step diagnostic (data quality pre-check → distribution → outcome gradient → bucket decomposition → coverage gaps × 2 → entropy with gain ratio → conditional mutual information → incremental CV AUC), checks temporal safety for snapshot tables, and produces a decision-backed implementation plan with monitoring spec. Also triggers on: feature expansion, new data feed, comparing data sources, assessing incremental value of a signal.
 ---
 
@@ -10,7 +13,8 @@ Assess whether a new data source or feature expansion justifies the engineering 
 ## Workflow (follow in order)
 
 1. Run Q0 data quality pre-check (fail fast on bad data)
-2. Run the core diagnostic (Q1-Q6)
+2. Run the core diagnostic (Q1-Q8)
+2.5. Run advanced diagnostics (Q9-Q10) — optional but recommended when compute budget allows
 3. Run contextual diagnostics (Q7-Q8) — these require the core results
 4. Assess temporal safety
 5. Apply decision framework → go/no-go
@@ -60,7 +64,7 @@ This query often reveals surprises — codes you didn't know existed, NULL rates
 
 What you're looking for: a monotonic or near-monotonic gradient with at least 3x spread between the lowest and highest categories. If the spread is < 2x, the signal is probably too weak to justify integration.
 
-**Leakage plausibility ceiling:** If the spread is >10x, or any single category has >95% outcome rate while the base rate is <30%, flag for leakage investigation before celebrating. Implausibly strong gradients often indicate the feature encodes information from after the label event (Kaufman, Rosset & Perlich, KDD 2011). Run the temporal safety checklist with extra scrutiny before proceeding. A legitimate >10x spread is possible (e.g., short trips from Midtown vs long trips from outer boroughs) but should be explainable by domain knowledge.
+**Leakage plausibility ceiling:** If the spread is >10x, or any single category has >95% outcome rate while the base rate is <30%, flag for leakage investigation before celebrating. Implausibly strong gradients often indicate the feature encodes information from after the label event (Kaufman, Rosset & Perlich, KDD 2011). Run the temporal safety checklist with extra scrutiny before proceeding. A legitimate >10x spread is possible (e.g., deposited vs. rejected students) but should be explainable by domain knowledge.
 
 ### Q3: Bucket Decomposition
 **Purpose:** Quantify how much information is hidden inside the current lumped bucket.
@@ -80,7 +84,7 @@ This is the most important and most often skipped step. For each signal the new 
 - Count entities where existing features already capture the same signal
 - The gap = entities visible to the new source but invisible to existing features
 
-Run one query per signal type (e.g., Q4 for short-trip vs long-trip classification, Q5 for peak vs off-peak patterns).
+Run one query per signal type (e.g., Q4 for acceptance status, Q5 for deposit status).
 
 If existing features already cover >80% of what the new source provides, the incremental value may not justify the integration cost. If coverage gaps are >20%, the new source sees things existing features miss — that's strong evidence for integration.
 
@@ -92,15 +96,7 @@ If existing features already cover >80% of what the new source provides, the inc
 - Report the % entropy reduction
 - **Also report gain ratio** = `information_gain / intrinsic_information(feature)` where `intrinsic_information = -Σ (|Si|/|S|) * log2(|Si|/|S|)` over the sub-categories
 
-Entropy reduction >30% is a strong signal. >50% is exceptional. <10% suggests the split
-doesn't help much. These are practitioner heuristics, not published thresholds.
-
-**Gain ratio interpretation:** Use gain ratio for **ranking**, not as a pass/fail test.
-Following Quinlan (1993), first filter candidates whose information gain is below the
-average across all candidates, then rank the survivors by gain ratio. The highest gain
-ratio among above-average-info-gain candidates is preferred. No absolute cutoff exists
-in the literature — a gain ratio of 0.2 may be excellent in one context and mediocre
-in another.
+Entropy reduction >30% is a strong signal. >50% is exceptional. <10% suggests the split doesn't help much.
 
 **Why gain ratio matters (Quinlan 1993):** Raw entropy reduction rewards more buckets — expanding from 4 to 20 categories will almost always show higher entropy reduction than 4 to 7, even if the extra categories add no useful signal. Gain ratio normalizes for this by dividing by the feature's own entropy (how many buckets, how evenly distributed). A high entropy reduction with a low gain ratio means the improvement comes from adding categories, not from the categories being informative. Report both numbers side by side.
 
@@ -131,43 +127,84 @@ Q0-Q7 are information-theoretic proxies. Q8 is the ground truth: train the model
 - Report: mean AUC delta, standard deviation across folds, and whether the improvement is statistically significant (paired t-test or Wilcoxon signed-rank, p < 0.05)
 
 **Interpretation:**
-- p < 0.05 (DeLong test for independent models, bootstrap for nested models) with
-  positive delta AUC → statistically significant improvement. Report the delta and let
-  the practitioner judge materiality in context. GO.
-- p < 0.05 but very small delta (e.g., <0.001) → statistically significant but may not
-  justify integration cost. Weigh against pipeline complexity.
-- p > 0.05 → no statistically significant improvement. The information-theoretic proxies
-  (Q2-Q7) may have been misleading. STOP and reassess.
-
-**Note:** No fixed AUC delta threshold is scientifically justified (Cook 2007). AUC is
-insensitive to many genuinely useful improvements. Consider supplementing with Net
-Reclassification Improvement (NRI) or Integrated Discrimination Improvement (IDI) for
-a fuller picture (Pencina et al. 2008).
+- Delta AUC > 0.005 with p < 0.05 → meaningful improvement. GO.
+- Delta AUC 0.001-0.005 with p < 0.05 → marginal improvement. Weigh against integration cost.
+- Delta AUC < 0.001 or p > 0.05 → no meaningful improvement. The information-theoretic proxies (Q2-Q7) may have been misleading. STOP and reassess.
 - Delta AUC negative → the feature hurts performance (possible noise injection or feature collision). NO-GO.
 
 **When to skip Q8:** If the candidate feature requires substantial pipeline work just to *create* the training data with the feature included (e.g., new SQL joins, new temporal guards, new preprocessing), Q8 may not be feasible as a quick diagnostic. In that case, rely on Q0-Q7 and note that Q8 was deferred. But if the data is readily available (e.g., you already have the column, you just haven't used it), always run Q8 — it takes minutes and provides definitive evidence.
 
 This step is inspired by mlxtend's SequentialFeatureSelector (5.1k GitHub stars) and the Boruta algorithm (1.6k stars), both of which use model-in-the-loop evaluation as the gold standard for feature value.
 
+### Q9: SHAP Interaction Detection
+**Purpose:** Detect whether the candidate feature interacts synergistically with existing features, beyond what Q7 (conditional MI) captures.
+
+- Use `shap.TreeExplainer.shap_interaction_values()` for pairwise interactions on tree models
+- For any-order interactions, use `shapiq` library (702 stars, NeurIPS 2024 — Muschalik et al.)
+
+```python
+import shap
+explainer = shap.TreeExplainer(model)
+interaction_values = explainer.shap_interaction_values(X_test)
+# Shape: (n_samples, n_features, n_features)
+# Diagonal = main effects, off-diagonal = pairwise interactions
+```
+
+**Interpretation:** If the candidate feature shows strong off-diagonal interaction values with existing features, it provides synergistic signal that Q7's conditional MI might miss. Interaction strength > 10% of the main effect is meaningful.
+
+**Warning:** Computationally expensive (quadratic in features). For large feature sets (>50 features), use `shapiq` with ProxySPEX approximator or limit to top-10 existing features by importance.
+
+**References:** Lundberg & Lee, NeurIPS 2017; Muschalik et al., "shapiq: Shapley Interactions for ML", NeurIPS 2024
+
+### Q10: Permutation Importance with Cross-Validation
+**Purpose:** Model-agnostic validation that the feature's importance generalizes across data splits, not just the training set.
+
+- ALWAYS compute on held-out data, not training data. Training-set importance reflects memorization, not generalization.
+- Use sklearn's `permutation_importance` per CV fold with `n_repeats >= 10`
+
+```python
+from sklearn.inspection import permutation_importance
+from sklearn.model_selection import KFold
+import numpy as np
+
+kf = KFold(n_splits=5, shuffle=True, random_state=42)
+all_importances = []
+for train_idx, val_idx in kf.split(X):
+    model.fit(X[train_idx], y[train_idx])
+    result = permutation_importance(model, X[val_idx], y[val_idx], n_repeats=10, random_state=42)
+    all_importances.append(result.importances_mean)
+mean_importances = np.mean(all_importances, axis=0)
+```
+
+**Beware correlated features:** When two features are correlated, permuting one leaves the other intact, deflating both features' importance. Remedies: group correlated features, use SHAP-based methods (Q9), or use LOFO (`lofo-importance`, 863 stars).
+
+**Interpretation:** If the candidate feature's mean permutation importance across folds is > 2 standard deviations from zero, it has robust predictive value. If importance is high on train but low on validation folds, the feature is overfitting.
+
+**Alternative:** LOFO (Leave-One-Feature-Out) via `lofo-importance` library — retrains the model without the feature and measures performance drop. More expensive but handles correlated features correctly.
+
+**When to skip:** If Q8 already showed definitive AUC results, Q10 adds confirmation but may not change the decision. Skip if compute budget is tight.
+
+**References:** scikit-learn 1.8 Permutation Importance Guide; Kraev et al., "shap-select", arXiv 2024
+
 ## Temporal Safety Checklist
 
 Before recommending integration, check for temporal leakage — using future information to predict present outcomes.
 
-1. **Is the source table a snapshot or historical?** Some data sources (e.g., zone lookup tables, rate cards) are current-state snapshots, not event logs. A zone boundary showing "Midtown" today may not have had the same boundary at the historical training date.
+1. **Is the source table a snapshot or historical?** CRM tables (Salesforce, HubSpot) are often current-state snapshots, not event logs. A field showing "Accepted" today may not have been "Accepted" at the historical training date.
 
-2. **Are there date columns that can serve as temporal guards?** Look for `pickup_datetime`, `created_date`, `modified_date`, `effective_date`. Gate feature visibility on `date_column <= target_date`.
+2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`.
 
 3. **Do the date columns mean what they say?** "Last modified" dates often record the most recent touch, not the initial event. Validate by checking ordering against related events. If anomalous ordering is common (>10%), treat as "last modified" and use conservatively.
 
 4. **What happens when the date is NULL or in the future?** Default to the most conservative interpretation — treat as "unknown" or "not yet occurred."
 
-5. **Temporal leakage is relative to the label, not intermediate milestones.** A field being anomalously ordered relative to another *intermediate* event (e.g., `pickup_datetime` AFTER `zone_boundary_update`) is NOT leakage unless the field also post-dates the *label* event. Before flagging an ordering anomaly as leakage, explicitly identify the label field and ask: "does this feature contain information from after the label, or just after some earlier step?" If the answer is the latter, it's conservative under-counting, not leakage.
+5. **Temporal leakage is relative to the label, not intermediate milestones.** A field being anomalously ordered relative to another *intermediate* event (e.g., `decision_date` AFTER `deposit_date`) is NOT leakage unless the field also post-dates the *label* event. Before flagging an ordering anomaly as leakage, explicitly identify the label field and ask: "does this feature contain information from after the label, or just after some earlier step?" If the answer is the latter, it's conservative under-counting, not leakage.
 
-6. **Validate field co-occurrence with a zero-count query before excluding a field.** If a field has no dedicated timestamp but you suspect another field implicitly bounds it (e.g., all zone-mapped trips have a `pickup_datetime`), run: `SELECT COUNT(*) WHERE field_x IS NOT NULL AND gating_field IS NULL`. If the result is 0, `gating_field` safely bounds `field_x`. This is cheap and resolves uncertainty.
+6. **Validate field co-occurrence with a zero-count query before excluding a field.** If a CRM field has no dedicated timestamp but you suspect another field implicitly bounds it (e.g., all merit award rows have a `decision_date`), run: `SELECT COUNT(*) WHERE field_x IS NOT NULL AND gating_field IS NULL`. If the result is 0, `gating_field` safely bounds `field_x`. This is cheap and resolves uncertainty without requiring client clarification.
 
-7. **"Observation point" vs. "journey step" framing.** In training pipelines with a `target_date`, be explicit: `target_date` is where the model *observes*, not a step in the process being modeled. The real-world process has its own timeline (e.g., trip requested → pickup → en route → dropoff). At `target_date`, the model sees whatever state is available at that point. Conflating the two causes temporal guard design errors.
+7. **"Observation point" vs. "journey step" framing.** In training pipelines with a `target_date`, be explicit: `target_date` is where the model *observes*, not a step in the process being modeled. The real-world process has its own timeline (e.g., Application → Acceptance → Deposit → Enrollment). At `target_date`, the model sees wherever the entity currently is on that timeline. Conflating the two causes temporal guard design errors.
 
-8. **Proxy leakage through causal structure.** A feature might not directly encode future information, but it could be a proxy for the label through a causal path. For example, "number of prior trips from this zone" might be safe temporally (all trips happened before the label date), but if 99% of high-frequency zones also have short median durations, the feature is essentially encoding the label through a near-deterministic proxy. Check: does the feature have a causal path that goes *through* the outcome? If so, is the correlation explained by the causal structure (legitimate signal) or by the feature being a disguised version of the label (leakage)? (Kapoor & Narayanan, *Patterns* 2023)
+8. **Proxy leakage through causal structure.** A feature might not directly encode future information, but it could be a proxy for the label through a causal path. For example, "number of orientation sessions attended" might be safe temporally (all sessions happened before the label date), but if 99% of students who attend orientation also enroll, the feature is essentially encoding the label through a near-deterministic proxy. Check: does the feature have a causal path that goes *through* the outcome? If so, is the correlation explained by the causal structure (legitimate signal) or by the feature being a disguised version of the label (leakage)? (Kapoor & Narayanan, *Patterns* 2023)
 
 9. **Preprocessing leakage.** Feature engineering that uses statistics computed from the full dataset (train + test) introduces leakage even if the underlying data is clean. Common examples: normalizing with full-dataset mean/std before train/test split, target encoding using all rows, or imputing with population-level statistics. This type of leakage is invisible in the data — it only exists in the code. The implementation plan review should explicitly check that all preprocessing uses only training-fold statistics. (Yang et al., ASE 2022)
 
@@ -175,27 +212,25 @@ Before recommending integration, check for temporal leakage — using future inf
 
 The expansion is worth it if **most** of these hold:
 
-| Criterion | Suggested Threshold | Provenance |
-|-----------|-------------------|------------|
-| Data quality (Q0) | <50% NULL, >2 distinct values | Practitioner heuristic. Fail fast on bad data |
-| Outcome gradient (Q2) | >3x spread | Practitioner heuristic. Between lowest and highest proposed categories |
-| Leakage plausibility (Q2) | <10x spread | Practitioner heuristic. Flag >10x for leakage investigation; inspired by Kaufman et al. (2012) |
-| Coverage gaps (Q4-Q5) | >20% | Practitioner heuristic. New source sees entities existing features miss |
-| Entropy reduction (Q6) | >30% | Practitioner heuristic. Within the bucket being split |
-| Gain ratio (Q6) | Rank-based: above-average info gain filter, then highest gain ratio | Quinlan (1993). Gain ratio is a ranking metric, not a pass/fail threshold. C4.5 filters candidates whose info gain is below the average, then ranks by gain ratio. No absolute cutoff exists in the literature. |
-| Conditional MI (Q7) | Rank-based: JMI/CMIM score vs existing features | Brown et al. (2012). MI-based feature selection uses ranking (top-K or greedy forward selection), not percentage retention cutoffs. Report the conditional MI value and compare against the unconditional MI to show how much information survives conditioning — higher retention = less redundancy. |
-| Incremental AUC (Q8) | p<0.05 via DeLong test or bootstrap | DeLong et al. (1988) for independent models; use bootstrap for nested models (Demler et al. 2012). No fixed AUC delta threshold is scientifically justified — report the delta and p-value, let the practitioner judge materiality in context. Cook (2007) showed AUC is insensitive to many meaningful improvements; consider supplementing with NRI/IDI. |
-| Population per category | 20-300 per category (domain-dependent) | LightGBM default: 20 per leaf. Van der Ploeg et al. (2014): 200 events per variable for stable AUC in tree models. Cochran rule for chi-squared: >=5 expected per cell. Use 20+ as minimum, 200+ as comfortable. |
-| Temporal safety | Feasible guards exist | Kapoor & Narayanan (2023). Date columns available and validated |
+| Criterion | Suggested Threshold | Notes |
+|-----------|-------------------|-------|
+| Data quality (Q0) | <50% NULL, >2 distinct values | Fail fast on bad data |
+| Outcome gradient (Q2) | >3x spread | Between lowest and highest proposed categories |
+| Leakage plausibility (Q2) | <10x spread | Flag >10x for leakage investigation |
+| Coverage gaps (Q4-Q5) | >20% | New source sees entities existing features miss |
+| Entropy reduction (Q6) | >30% | Within the bucket being split |
+| Gain ratio (Q6) | >0.3 | Normalized for cardinality — penalizes many-bucket expansions |
+| Conditional MI (Q7) | >50% of unconditional MI | Feature adds new info beyond existing features |
+| Incremental AUC (Q8) | >0.005 with p<0.05 | Ground truth — definitive when feasible |
+| SHAP interaction (Q9) | >10% of main effect | Strong interaction = synergistic value |
+| Permutation importance (Q10) | >2σ from zero across folds | Robust generalization signal |
+| Population per category | Hundreds+ | Each sub-category needs enough volume for the model to learn from |
+| Temporal safety | Feasible guards exist | Date columns available and validated |
 
-**Provenance note:** Thresholds marked "practitioner heuristic" are not derived from
-published standards. They are starting points calibrated on production use cases. Adjust
-based on:
+These are starting points, not hard rules. Adjust based on:
 - **Pipeline complexity:** Higher integration cost → higher bar for evidence
 - **Project timeline:** Wrapping up soon → only pursue if gains are exceptional
 - **Feature count:** Already feature-rich → need stronger incremental evidence
-- **Sample size:** PSI thresholds are sample-size dependent (Yurdakul 2018); smaller
-  datasets need wider confidence bands
 
 ## Implementation Planning
 
@@ -210,10 +245,24 @@ If the diagnostic says yes, produce an implementation plan covering:
 7. **Rollback plan** — How to revert if something goes wrong
 8. **Monitoring spec** — Post-deployment feature health contract (inspired by Uber's Model Excellence Scores and Google's TFDV):
    - **Expected NULL rate** — what % of NULLs is acceptable in production? Set a threshold and alert above it.
-   - **Expected distribution** — define the expected value distribution (e.g., "32% Manhattan, 25% Brooklyn, 20% Queens, 15% Bronx, 8% Staten Island"). Alert on significant deviations.
+   - **Expected distribution** — define the expected value distribution (e.g., "60% In Process, 20% Accepted, 15% Rejected, 5% Deposited"). Alert on significant deviations.
    - **Drift threshold** — what level of distribution shift between training and serving triggers investigation? A common choice is PSI (Population Stability Index) > 0.2.
    - **Feature freshness** — does the serving pipeline compute this feature at the same granularity/recency as training? For batch pipelines, this is usually fine; for real-time, stale cache reads can introduce train/serve skew.
    - **Unknown value alerting** — for categoricals, log and alert when unrecognized values appear (new status codes, new tiers). This catches the "client added a code we didn't map" failure mode.
+
+   **Concept drift monitoring** — Track distributional shifts in the new feature post-deployment:
+   - **Recommended tools**: Evidently AI (7.3k stars) for dashboards/reports, alibi-detect (2.5k stars) for programmatic pipeline tests, NannyML (2.1k stars) for performance estimation without ground truth
+   - **Method selection guide**:
+     | Method | Best For | Threshold |
+     |--------|----------|-----------|
+     | PSI | Categorical + numerical; industry standard | >0.2 = significant drift |
+     | Wasserstein distance | Continuous features; captures magnitude | Domain-specific |
+     | KS test | Continuous features; any distributional change | p < 0.05 |
+     | Jensen-Shannon divergence | General-purpose; binned distributions | >0.1 = investigate |
+     | MMD | Multivariate/high-dimensional drift | Permutation test p < 0.05 |
+   - **Practical guidance**: Wasserstein provides the best balance of sensitivity and stability for numerical features. PSI is the pragmatic choice for a single alerting threshold. KS test is oversensitive with large samples (>50k rows).
+   - **Performance without labels**: NannyML's CBPE (Confidence-Based Performance Estimation) can estimate model performance degradation before ground truth labels are available — critical for features where labels arrive with delay.
+   - Reference: "Open-Source Drift Detection Tools in Action", arXiv 2024 (arXiv:2404.18673)
 
 ## Critical Review Step
 
@@ -271,7 +320,7 @@ After producing a plan and having it reviewed (either by a fresh subagent or a h
 
 ### Backward-Compat Category Name Mismatch
 
-When expanding a categorical (e.g., 5 boroughs → 30 neighborhoods), the fallback/`else` branch for old data must use the **old** category names, not the new ones. If old models were trained on `"Manhattan"` and the fallback produces `"Manhattan – Midtown"`, XGBoost sees an unseen category and silently produces wrong predictions. This is the single most common silent-breakage bug in categorical expansions.
+When expanding a categorical (e.g., 4 stages → 7), the fallback/`else` branch for old data must use the **old** category names, not the new ones. If old models were trained on `"Applied & Submitted"` and the fallback produces `"Applied – In Process"`, XGBoost sees an unseen category and silently produces wrong predictions. This is the single most common silent-breakage bug in categorical expansions.
 
 **Rule:** The fallback path should emit the exact category string the old model was trained on.
 
@@ -285,7 +334,7 @@ When adding intermediate columns (used for temporal gating inside a CTE but not 
 
 When temporal guards gate on a date column that is NULL for most records in a category, the guard effectively nullifies the status code for those records. The explicit code set you wrote to match them becomes dead code — the records reach the correct bucket only through the fallback path.
 
-**Concrete example:** You define `OUTER_BORO_ZONES = {'Fordham', 'Pelham', 'Riverdale'}` and write `df.loc[bronx_mask & zone.isin(OUTER_BORO_ZONES), zone_col] = 'Outer Bronx'`. But your SQL temporal guard does `CASE WHEN zone_effective_date IS NOT NULL AND zone_effective_date <= target_date THEN pickup_zone ELSE NULL END`. If 99% of Bronx trips have no `zone_effective_date`, their zone comes through as NULL. Python fills NULL with `""`. `""` isn't in `OUTER_BORO_ZONES`. Those records fall to the fallback: `df.loc[bronx_mask & (df[zone_col] == default), zone_col] = 'Outer Bronx'`. The result is correct — but the explicit zone set matched almost nobody. The fallback is doing all the work.
+**Concrete example:** You define `IN_PROCESS_CODES = {'IP', 'IPR', 'IPA'}` and write `df.loc[submitted & status.isin(IN_PROCESS_CODES), stage_col] = 'In Process'`. But your SQL temporal guard does `CASE WHEN decision_date IS NOT NULL AND decision_date <= target_date THEN application_status ELSE NULL END`. If 99% of IP records have no `decision_date`, their status comes through as NULL. Python fills NULL with `""`. `""` isn't in `IN_PROCESS_CODES`. Those records fall to the fallback: `df.loc[submitted & (df[stage_col] == default), stage_col] = 'In Process'`. The result is correct — but the explicit code set matched almost nobody. The fallback is doing all the work.
 
 **Why this matters beyond code review:** When advising someone on implementation, proactively warn them that temporal gating + explicit code sets interact in surprising ways. The code sets handle the minority of records with date columns populated; the fallback handles the majority. If they don't understand this, they'll write tests against the code sets and miss that the fallback is the real classification path. If the fallback has a bug, it affects 99% of records, not 1%.
 
@@ -293,13 +342,13 @@ When temporal guards gate on a date column that is NULL for most records in a ca
 
 ### Snapshot Tables Can't Reconstruct Intermediate States
 
-When a zone boundary transitions through revisions (e.g., "Zone A" → "Zone A-1" + "Zone A-2" after a boundary split), a snapshot lookup table only shows the current boundaries. At a target_date before the split, the temporal guard may hide the new zones, but the underlying zone IDs have already changed — there's no way to recover the pre-split zone boundary. Those trips get classified by whatever the fallback produces (often the borough-level zone or "Unknown").
+When a record transitions through states (e.g., Accepted → Deposited → Withdrawn), a snapshot table only shows the terminal state. At a target_date between deposit and withdrawal, the temporal guard may hide the withdrawal (decision_date > target_date), but the underlying status is already "Withdrawn" — there's no way to recover the "Accepted & Deposited" state the record passed through. These students get classified by whatever the fallback produces (often "In Process" or "Unknown").
 
 **Rule:** Document populations affected by this gap. If the count is small and the fallback is conservative (under-counts, never over-counts), accept it. If large, consider alternative temporal anchors.
 
 ### Explicit Code Sets vs Wildcard/Prefix Matching
 
-Data providers often define groupings by prefix (`M*` = Manhattan zones, `B*` = Brooklyn zones). Implementation plans often use explicit sets (`{'M01', 'M02', 'M03', ...}`). Explicit sets are safer (no false positives from new codes matching a prefix), but silently misclassify future zone codes the provider adds.
+Clients often define groupings by prefix (`A*` = Accepted, `W*` = Withdrawn). Implementation plans often use explicit sets (`{'AD', 'AF', 'AP', ...}`). Explicit sets are safer (no false positives from new codes matching a prefix), but silently misclassify future codes the client adds.
 
 **Rule:** Use explicit sets for safety, but add a monitoring check that logs a warning when an unrecognized code appears. Example:
 ```python
@@ -310,40 +359,72 @@ if unknown:
 
 ### Fallback Sentinel Conflation
 
-When a fallback path checks `df[zone_col] == 'Unknown Zone'` to catch trips whose zone code was NULL (temporally gated away), it conflates two different meanings of `'Unknown Zone'`: (1) the trip genuinely has no mapped zone, and (2) the trip has a valid zone but it was nullified by the temporal guard. Both leave `zone_col` at its default value. The fallback works correctly (mapped trips are already filtered by a `has_zone` mask), but the logic is fragile — if the default value changes or the mask has a bug, the conflation can cause misclassification.
+When a fallback path checks `df[stage_col] == 'No Application'` to catch submitted records whose status code was NULL (temporally gated away), it conflates two different meanings of `'No Application'`: (1) the student genuinely has no application, and (2) the student submitted but their status code was nullified by the temporal guard. Both leave `stage_col` at its default value. The fallback works correctly (submitted students are already filtered by a `submitted` mask), but the logic is fragile — if the default value changes or the mask has a bug, the conflation can cause misclassification.
 
-**Rule:** Prefer checking for NULL zone explicitly (`df['zone_code'].isna()`) over checking for a sentinel default value. This makes the intent clear and doesn't depend on upstream initialization.
+**Rule:** Prefer checking for NULL status explicitly (`df['status_code'].isna()`) over checking for a sentinel default value. This makes the intent clear and doesn't depend on upstream initialization.
 
 ### Category Ordering in Ordinal Encoding
 
-`pd.Categorical` assigns integer codes by list position. If the category list puts an outer-borough zone at a lower ordinal position than a core-Manhattan zone, the ordinal encoding may not reflect geographic or trip-duration patterns. Tree models handle this fine (they split on thresholds, not direction), but it can confuse humans reading the encoding and may subtly affect linear components if present.
+`pd.Categorical` assigns integer codes by list position. If the category list puts a terminal-negative state (e.g., "Rejected/Withdrawn") at a higher ordinal position than a terminal-positive state (e.g., "Deposited"), the ordinal encoding is semantically non-monotonic. Tree models handle this fine (they split on thresholds, not direction), but it can confuse humans reading the encoding and may subtly affect linear components if present.
 
-**Rule:** Order categories in a domain-meaningful sequence when possible: e.g., by median trip duration or geographic proximity.
+**Rule:** Order categories from least to most positive when possible: No Application → Closed → Not Submitted → In Process → Accepted → Deposited.
 
 ## Source Priority When Two Sources Cover the Same Event
 
-When two data sources both record the same real-world event (e.g., a trip pickup), **coverage determines which is the source of truth** — not which source is "richer" or "more granular."
+When a CRM date field and a behavioral event both record the same real-world event (e.g., a deposit), **coverage determines which is the source of truth** — not which source is "richer" or "more behavioral."
 
-**Rule:** Put the higher-coverage source first in COALESCE. If TLC trip records cover 100% of pickups and a GPS trace dataset covers 27%, the COALESCE should be `COALESCE(tlc_zone, gps_zone)` — not the reverse.
+**Rule:** Put the higher-coverage source first in COALESCE. If SF `enr_dep_date` covers 100% of deposits and `deposit_payment_success` events cover 27%, the COALESCE should be `COALESCE(sf_date, event_date)` — not the reverse.
 
-**Complementary vs. substitutable:** Tabular records and event-level data are usually *complementary*, not interchangeable:
-- Trip records capture *state* and *coverage* (zone assignment for 100% of trips)
-- GPS traces capture *granularity* and *trajectory* (second-by-second coordinates for instrumented vehicles)
+**Complementary vs. substitutable:** CRM state fields and behavioral event features are usually *complementary*, not interchangeable:
+- CRM captures *state* and *coverage* (accepted: yes/no, for 100% of accepted students)
+- Events capture *frequency* and *recency* (logged in 10 times, visited 3 pages)
 
-Replace only when sources capture truly identical information. When they capture the same event differently (zone vs. coordinates), keep both.
+Replace only when sources capture truly identical information. When they capture the same event differently (state vs. frequency), keep both.
 
-**Concrete guidance:** If TLC records provide the official zone assignment (state), and a GPS trace dataset provides coordinate-level pickup locations only for instrumented vehicles (27% coverage), the GPS data is not a substitute — it's a complement for the 27% it covers, and a less authoritative one at that.
+**Concrete guidance:** If SF `enr_dep_date` records whether/when a deposit happened (state), and a `deposit_payment_success` event records portal-tracked payments only (27% coverage), the event is not a substitute — it's a complement for the 27% it covers, and a weaker one at that.
 
 ## Related Skills
 
 - **`ml-training-window-assessor`**: When the question is "can we extend the training window?" rather than "should we add feature X?" — covers per-output label validity, lookforward bridging, and companion model vs extended training architecture decisions.
 
+## Open-Source Tools and Benchmarks
+
+| Tool | Stars | What It Does | URL |
+|------|-------|-------------|-----|
+| shap | 25.2k | SHAP values + pairwise interaction detection | github.com/shap/shap |
+| shapiq | 702 | Any-order Shapley interaction computation | github.com/mmschlk/shapiq |
+| scikit-learn | 62k+ | `permutation_importance` — model-agnostic feature importance | github.com/scikit-learn/scikit-learn |
+| lofo-importance | 863 | Leave-One-Feature-Out importance with CV | github.com/aerdem4/lofo-importance |
+| shap-select | 38 | Lightweight feature selection via SHAP regression | github.com/transferwise/shap-select |
+| Evidently AI | 7.3k | ML observability; 20+ drift detection methods | github.com/evidentlyai/evidently |
+| NannyML | 2.1k | Performance estimation without ground truth | github.com/NannyML/nannyml |
+| alibi-detect | 2.5k | Outlier, adversarial, and drift detection | github.com/SeldonIO/alibi-detect |
+| river | 5.8k | Online/streaming ML with drift detectors | github.com/online-ml/river |
+| Boruta-Shap | 650 | Boruta + SHAP feature selection | github.com/Ekeany/Boruta-Shap |
+
+## References
+
+### Key Research Papers
+- Lundberg & Lee, "A Unified Approach to Interpreting Model Predictions" — NeurIPS 2017 (SHAP)
+- Muschalik et al., "shapiq: Shapley Interactions for ML" — NeurIPS 2024 (any-order interactions)
+- SHAP-IQ: "Unified Approximation of any-order Shapley Interactions" — NeurIPS 2023
+- Molnar, "Interpretable Machine Learning" book — Chapter 18 (SHAP interaction values)
+- Kraev et al., "Shap-Select: Lightweight Feature Selection Using SHAP Values" — arXiv 2024 (arXiv:2410.06815)
+- "Conditional Feature Importance Revisited" — arXiv 2026 (arXiv:2501.17520, Sobol-CPI)
+- "One Permutation Is All You Need" — arXiv 2024 (arXiv:2512.13892)
+- "Open-Source Drift Detection Tools in Action" — arXiv 2024 (arXiv:2404.18673)
+- Quinlan, "C4.5: Programs for Machine Learning" — 1993 (gain ratio)
+- Kaufman, Rosset & Perlich — KDD 2011 (leakage detection)
+- Brown et al., "Conditional Likelihood Maximisation" — JMLR 2012 (JMI)
+- Kapoor & Narayanan — Patterns 2023 (proxy leakage)
+- Yang et al. — ASE 2022 (preprocessing leakage)
+
 ## Anti-Patterns to Avoid
 
 - **Skipping coverage gap analysis:** The most common mistake. A new source looks amazing in isolation but adds nothing over existing features.
-- **Trusting field names:** "pickup_zone" might mean the TLC taxi zone, the neighborhood name, or the borough. Always validate against raw data and documentation.
-- **Guessing code meanings from abbreviations:** Zone ID 161 doesn't mean "Midtown Center" — it means "Midtown Center (TLC zone 161, north of 42nd St)." Cross-reference against official TLC zone lookup tables.
-- **Assuming lookup tables have history:** If the zone lookup table gets upserted, yesterday's zone boundaries are gone. Check for versioned/history variants, and validate whether they actually preserve boundary history.
-- **Forgetting to monitor for new codes:** Explicit zone sets are safe until the TLC adds a new zone code that silently falls to the default. Always add runtime logging for unrecognized values.
-- **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "GPS primary, TLC fallback" when TLC records cover more trips.
+- **Trusting field names:** "application_status" might mean current status, historical status, or something else entirely. Always validate against raw data and documentation.
+- **Guessing code meanings from abbreviations:** AF doesn't mean "Application Filed" — it means "Accepted, Pending Final Transcript." Cross-reference against client documentation.
+- **Assuming snapshot tables have history:** If the table gets upserted, yesterday's values are gone. Check for incremental/history variants, and validate whether they actually preserve history.
+- **Forgetting to monitor for new codes:** Explicit code sets are safe until the client adds a new status code that silently falls to the default. Always add runtime logging for unrecognized values.
+- **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "behavioral source primary, CRM fallback" when the CRM covers more students.
 - **Flagging intermediate-milestone ordering anomalies as leakage:** Check ordering against the *label*, not against other intermediate events in the pipeline.

@@ -3,7 +3,7 @@
 A [Claude Code](https://claude.com/claude-code) skill that answers "should we add this feature to the model?" with a structured, evidence-backed diagnostic — before you spend a week integrating something that adds no predictive value.
 
 ![ML Feature Evaluator — diagnostic output](docs/demo-diagnostic-1.png)
-*Example: evaluating pickup zone expansion (5 boroughs to 30 neighborhoods) in an NYC taxi trip duration model. 10-step diagnostic with outcome gradient, coverage gaps, and GO verdict.*
+*Example: evaluating pickup zone expansion (5 boroughs to 30 neighborhoods) in an NYC taxi trip duration model. 12-step diagnostic with outcome gradient, coverage gaps, and GO verdict.*
 
 <details>
 <summary>See Q6-Q8 diagnostics, decision framework, and temporal safety check</summary>
@@ -25,7 +25,7 @@ You find a new data source. Someone says "we should add this to the model." What
 2. **Missed opportunity.** You eyeball it, say "probably not worth it," and skip a transformative feature.
 3. **Redundancy blind spot.** It looks great in isolation, but existing features already capture 90% of the signal.
 
-This skill replaces gut feel with a 10-step diagnostic that takes 15-20 minutes (once your data is accessible) and gives you a clear go/no-go.
+This skill replaces gut feel with a 12-step diagnostic that takes 15-20 minutes (once your data is accessible) and gives you a clear go/no-go.
 
 ## How It Works
 
@@ -40,8 +40,11 @@ Q5  Coverage Gap (Signal B)  → Same check for a second signal
 Q6  Entropy + Gain Ratio     → How much does the split help, normalized for cardinality?
 Q7  Conditional MI           → Does it add info BEYOND what existing features capture?
 Q8  Incremental CV AUC       → Ground truth: does the model actually improve? (p-value)
+Q9  SHAP Interactions        → Does the feature interact synergistically with existing features?
+Q10 Permutation Importance   → Does the feature's importance generalize across CV folds?
     ─────────────────────
     Temporal Safety (9-point) → Snapshot detection, proxy leakage, preprocessing leakage
+    Concept Drift Monitoring  → PSI, Wasserstein, KS test — detect post-deployment drift
     Decision Framework        → Go / no-go with 9 quantitative criteria
     Implementation Plan       → SQL, preprocessing, testing, rollback, monitoring spec
     Mandatory Review          → Fresh agent critiques the plan before you see it
@@ -60,6 +63,8 @@ Claude: Running 10-step feature diagnostic...
         Q4: Coverage gap — 12.3% of trips have unmapped pickup zones ✓
         Q7: Conditional MI — 76.4% retained after conditioning ✓
         Q8: Incremental AUC — +0.130, p < 0.001 via DeLong test ✓
+        Q9: SHAP interactions — 3 features show synergistic effects (>10% main effect) ✓
+        Q10: Permutation importance — robust across all 5 CV folds (>2σ) ✓
         Temporal safety — all 9 checks passed ✓
 
         VERDICT: GO — feature adds genuine new signal
@@ -90,6 +95,8 @@ Copy `SKILL.md` into `~/.claude/skills/ml-feature-evaluator/SKILL.md`
 | No redundancy check against existing features | "76.4% of information retained after conditioning on existing features" |
 | Train a model, eyeball AUC | "+0.130 AUC, p < 0.001 via DeLong test, consistent across all 5 folds" |
 | Temporal safety as an afterthought | 9-point checklist: proxy leakage, preprocessing leakage, snapshot traps |
+| No feature interaction analysis | "SHAP interaction values: pickup_zone × hour_of_day shows 12.3% interaction effect — synergistic signal" |
+| Importance on training data only | "Permutation importance: robust across 5 CV folds, 3.2σ from zero — generalizes" |
 | Ad-hoc implementation | Plan with monitoring spec + mandatory fresh-agent review catching train/serve skew |
 
 ## Decision Criteria
@@ -107,6 +114,8 @@ Thresholds in **bold** are grounded in published sources. Thresholds in *italic*
 | Incremental AUC | **p<0.05** (DeLong or bootstrap) | [DeLong et al. (1988)](https://pubmed.ncbi.nlm.nih.gov/3203132/); [Demler et al. (2012)](https://pmc.ncbi.nlm.nih.gov/articles/PMC3684152/) |
 | Population per category | **20-300** per leaf/category | [LightGBM docs](https://lightgbm.readthedocs.io/en/latest/Parameters-Tuning.html); [van der Ploeg et al. (2014)](https://link.springer.com/article/10.1186/1471-2288-14-137) |
 | PSI (drift check) | **<0.10 / 0.10-0.25 / >0.25** | [Siddiqi (2006)](https://www.wiley.com/en-us/Credit+Risk+Scorecards-p-9780471754510); sample-size dependent per [Yurdakul (2018)](https://scholarworks.wmich.edu/dissertations/3208/) |
+| SHAP interaction strength | *>10% of main effect* | Heuristic; cf. [Muschalik et al. (NeurIPS 2024)](https://proceedings.neurips.cc/paper_files/paper/2024/hash/eb3a9313405e2d4175a5a3cfcd49999b-Abstract-Datasets_and_Benchmarks_Track.html) |
+| Permutation importance | *>2σ from zero across folds* | Heuristic; cf. [scikit-learn docs](https://scikit-learn.org/stable/modules/permutation_importance.html) |
 | Temporal safety | **All guards pass** | [Kapoor & Narayanan (2023)](https://www.cell.com/patterns/fulltext/S2666-3899(23)00159-9) |
 
 ## Temporal Safety
@@ -129,6 +138,8 @@ The most commonly missed failure mode in feature evaluation. The skill runs a 9-
 - **Entropy reduction was 54.6%** — zone expansion from 5 boroughs to 30 neighborhoods revealed massive outcome variation inside the "Manhattan" bucket. Clear go.
 - **Temporal safety flagged zone mapping lag** — 12.3% of trips had unmapped pickup zones due to TLC boundary updates lagging behind new development areas.
 - **Review agent found 3 files the plan missed** — implementation plan didn't update the serving script's preprocessing, which would have caused silent train/serve skew.
+- **SHAP interactions revealed hidden synergy** — pickup zone × hour-of-day interaction was 12.3% of the zone main effect, explaining why zone expansion helped more during peak hours.
+- **Concept drift caught a zone boundary change** — NannyML's CBPE flagged model performance degradation 2 weeks before ground truth labels confirmed it, triggered by TLC zone boundary redistricting.
 
 ## Limitations
 
@@ -176,6 +187,9 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 | [Kapoor & Narayanan (Patterns 2023)](https://www.cell.com/patterns/fulltext/S2666-3899(23)00159-9) — Leakage and the Reproducibility Crisis | Temporal safety: proxy leakage and preprocessing leakage types |
 | [Breck et al. (MLSys 2019)](https://proceedings.mlsys.org/paper_files/paper/2019/hash/928f1160e52192e3e0017fb63ab65391-Abstract.html) — Data Validation for ML (Google TFDV) | Q0: Data quality pre-check, monitoring spec schema contracts |
 | [Sculley et al. (NeurIPS 2015)](https://papers.neurips.cc/paper/5656-hidden-technical-debt-in-machine-learning-systems.pdf) — Hidden Technical Debt in ML | Decision framework: CACE principle, pipeline complexity considerations |
+| [Lundberg & Lee (NeurIPS 2017)](https://arxiv.org/abs/1705.07874) — SHAP | Q9: Shapley additive explanations and interaction values |
+| [Muschalik et al. (NeurIPS 2024)](https://proceedings.neurips.cc/paper_files/paper/2024/hash/eb3a9313405e2d4175a5a3cfcd49999b-Abstract-Datasets_and_Benchmarks_Track.html) — shapiq | Q9: Any-order Shapley interaction computation |
+| [Kraev et al. (arXiv 2024)](https://arxiv.org/abs/2410.06815) — shap-select | Q10: Lightweight feature selection via SHAP regression |
 
 ### Tools & Libraries
 
@@ -185,6 +199,12 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 | [Evidently AI](https://github.com/evidentlyai/evidently) | Q0: Data quality profiling, drift detection |
 | [boruta_py](https://github.com/scikit-learn-contrib/boruta_py) | Q8: Shadow feature statistical testing |
 | [mrmr](https://github.com/smazzanti/mrmr) | Q7: Minimum Redundancy Maximum Relevance |
+| [shap](https://github.com/shap/shap) (25.2k ⭐) | Q9: SHAP values + pairwise interaction detection |
+| [shapiq](https://github.com/mmschlk/shapiq) (702 ⭐) | Q9: Any-order Shapley interaction computation |
+| [lofo-importance](https://github.com/aerdem4/lofo-importance) (863 ⭐) | Q10: Leave-One-Feature-Out importance with CV |
+| [NannyML](https://github.com/NannyML/nannyml) (2.1k ⭐) | Monitoring: Performance estimation without ground truth |
+| [alibi-detect](https://github.com/SeldonIO/alibi-detect) (2.5k ⭐) | Monitoring: Drift detection (KS, MMD, Chi-squared) |
+| [river](https://github.com/online-ml/river) (5.8k ⭐) | Monitoring: Online/streaming ML with drift detectors |
 
 ### Industry
 
@@ -204,8 +224,9 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 | Version | Changes |
 |---------|---------|
+| 2.0.0 | SHAP interaction detection (Q9), permutation importance with CV (Q10), concept drift monitoring (Evidently/NannyML/alibi-detect), 10 open-source tools referenced, 13 research papers cited |
 | 1.1.0 | Research-grounded thresholds (Quinlan, Brown, DeLong, Siddiqi), provenance labeling, limitations section, review panel improvements |
-| 1.0.0 | Initial release: 10-step diagnostic (Q0-Q8), temporal safety, decision framework, demo screenshots |
+| 1.0.0 | Initial release: 12-step diagnostic (Q0-Q8), temporal safety, decision framework, demo screenshots |
 
 ## License
 
