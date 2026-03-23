@@ -1,0 +1,14 @@
+{
+  "name": "wan-huiyan-ml-feature-evaluator",
+  "owner": {
+    "name": "Huiyan Wan"
+  },
+  "plugins": [
+    {
+      "name": "ml-feature-evaluator",
+      "source": ".",
+      "description": "Structured 12-step diagnostic for go/no-go feature evaluation in production ML pipelines.",
+      "version": "2.0.0"
+    }
+  ]
+}

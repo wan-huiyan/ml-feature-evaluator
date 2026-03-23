@@ -72,19 +72,38 @@ Claude: Running 10-step feature diagnostic...
 
 ## Installation
 
-### Claude Code CLI (recommended)
+### Claude Code
+
 ```bash
-claude install-skill github:wan-huiyan/ml-feature-evaluator
+# Plugin install (recommended)
+/plugin marketplace add wan-huiyan/ml-feature-evaluator
+/plugin install ml-feature-evaluator@wan-huiyan-ml-feature-evaluator
+
+# Git clone (always works)
+git clone https://github.com/wan-huiyan/ml-feature-evaluator.git ~/.claude/skills/ml-feature-evaluator
 ```
 
-### Git Clone
+### Cursor (2.4+)
+
 ```bash
-git clone https://github.com/wan-huiyan/ml-feature-evaluator.git
-cp -r ml-feature-evaluator/skills/ml-feature-evaluator ~/.claude/skills/
+# Per-project rule (most reliable)
+mkdir -p .cursor/rules
+# Create .cursor/rules/ml-feature-evaluator.mdc with SKILL.md content + alwaysApply: true
+
+# npx skills CLI
+npx skills add wan-huiyan/ml-feature-evaluator --global
+
+# Manual global install
+git clone https://github.com/wan-huiyan/ml-feature-evaluator.git ~/.cursor/skills/ml-feature-evaluator
 ```
 
 ### Manual
-Copy `SKILL.md` into `~/.claude/skills/ml-feature-evaluator/SKILL.md`
+
+```bash
+curl -o SKILL.md https://raw.githubusercontent.com/wan-huiyan/ml-feature-evaluator/main/SKILL.md
+mkdir -p ~/.claude/skills/ml-feature-evaluator
+mv SKILL.md ~/.claude/skills/ml-feature-evaluator/SKILL.md
+```
 
 ## Typical Ad-Hoc Analysis vs With Skill
 
