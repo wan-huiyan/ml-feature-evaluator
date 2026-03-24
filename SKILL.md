@@ -1,9 +1,44 @@
 ---
 name: ml-feature-evaluator
-version: 2.0.0
-date: 2026-03-23
+version: 2.1.0
+date: 2026-03-24
 author: wan-huiyan
-description: Structured go/no-go evaluation for adding a new feature or data source to a production ML model. Use when the user asks "should we add X to the model?", discusses a new table/field/CRM source, wants to expand an existing categorical, or mentions coverage gaps. Runs a 10-step diagnostic (data quality pre-check → distribution → outcome gradient → bucket decomposition → coverage gaps × 2 → entropy with gain ratio → conditional mutual information → incremental CV AUC), checks temporal safety for snapshot tables, and produces a decision-backed implementation plan with monitoring spec. Also triggers on: feature expansion, new data feed, comparing data sources, assessing incremental value of a signal.
+description: >
+  Structured go/no-go evaluation for adding a new feature or data source to a production ML model.
+  Triggers when the user asks any of these (or close variations):
+  - "Should we add X to the model?"
+  - "Is this feature/column/field worth integrating?"
+  - "Evaluate whether adding [data source] improves our [model]"
+  - "Run a go/no-go analysis on this candidate feature"
+  - "Does this new table/CRM field/data feed have predictive value?"
+  - "We have a coverage gap — would adding [source] help?"
+  - "Is the incremental value of [feature] worth the engineering cost?"
+  - "We want to expand our categorical from N to M buckets — worth it?"
+  - "Compare these two data sources — which should we use for [signal]?"
+  - "This column has lots of NULLs but looks predictive — should we use it?"
+  - "Feature worth it?" / "Signal or noise?" / "Add this to the pipeline?"
+  - "Assess whether [field] leaks or has real predictive power"
+  Other natural-language variations that should trigger this skill:
+  - "We got a new CRM/HubSpot/Salesforce field — is it useful for the model?"
+  - "The model has a coverage gap for [population]. Would adding [table] help?"
+  - "I just got access to a new engagement/demographic/financial table"
+  - "Is it worth adding demographic/behavioral/credit data to the model?"
+  - "Our top feature is X. Should we break it into sub-categories?"
+  - "This new data feed overlaps with what we have — is there incremental value?"
+  Does NOT trigger for: model selection, hyperparameter tuning, deployment,
+  code review, pull request review, training window extension, unit testing,
+  bug fixing, writing tests for pipelines, feature selection for a brand-new model
+  from scratch, or general ML education questions. Specifically does NOT trigger
+  for tasks about code quality, test coverage, or preprocessing bug fixes — even
+  if those tasks mention features, pipelines, or NULLs.
+scope: Evaluates ONE candidate feature or data source at a time against an existing (or planned) ML model. Not for bulk feature selection, model architecture, deployment, code review, testing, or training window decisions.
+input: A candidate feature/column/table name + context about the target model (what it predicts, existing features)
+output: Structured diagnostic report (Q0-Q10) with go/no-go recommendation. If GO, an implementation plan with monitoring spec and REVIEW_REQUEST block.
+dependencies: Access to the data store (BigQuery, Postgres, Snowflake, pandas) containing the candidate feature and training data. Optionally, an existing trained model for Q7-Q10.
+idempotent: true — rerunning on the same feature and data produces the same diagnostic results and recommendation
+error_behavior: If data access fails, report which diagnostic step failed and which steps can still proceed. If Q0 reveals severe data quality issues (>80% NULL, <3 distinct values), halt and report before running Q1-Q10.
+namespace: Outputs are scoped to the current conversation. No files written unless the user requests an implementation plan saved to disk.
+version_compat: Works with any tabular ML model. Requires scikit-learn >= 1.0, shap >= 0.40. Supported versions include Python 3.8+.
 ---
 
 # ML Feature Evaluator
@@ -13,15 +48,15 @@ Assess whether a new data source or feature expansion justifies the engineering 
 ## Workflow (follow in order)
 
 1. Run Q0 data quality pre-check (fail fast on bad data)
-2. Run the core diagnostic (Q1-Q8)
-2.5. Run advanced diagnostics (Q9-Q10) — optional but recommended when compute budget allows
-3. Run contextual diagnostics (Q7-Q8) — these require the core results
-4. Assess temporal safety
-5. Apply decision framework → go/no-go
-6. If GO: write implementation plan with monitoring spec
-5. **MANDATORY: Spawn a fresh review agent** to critique the plan (see "Critical Review Step"). Do NOT present the plan to the user until the review is incorporated. If you cannot spawn a subagent (e.g., you are already running as a subagent), output a `## REVIEW NEEDED` section at the end listing what a reviewer should check — use the checklist from the Critical Review Step.
-6. Incorporate review findings into the plan
-7. Present final plan + diagnostic report to user
+2. Run the core diagnostic (Q1-Q6: distribution, outcome gradient, bucket decomposition, coverage gaps, entropy)
+3. Run contextual diagnostics (Q7-Q8: conditional MI, incremental CV AUC) — these require the core results
+4. Optionally run advanced diagnostics (Q9-Q10: SHAP interactions, permutation importance) when compute budget allows
+5. Assess temporal safety using the Temporal Safety Checklist below
+6. Apply the Decision Framework below → go/no-go
+7. If GO: write implementation plan with monitoring spec
+8. **MANDATORY: Spawn a fresh review agent** to critique the plan (see "Critical Review Step"). Do NOT present the plan to the user until the review is incorporated. If you cannot spawn a subagent (e.g., you are already running as a subagent), output a `## REVIEW NEEDED` section at the end listing what a reviewer should check — use the checklist from the Critical Review Step.
+9. Incorporate review findings into the plan
+10. Present final plan + diagnostic report to user
 
 ## Why this matters
 
@@ -39,7 +74,7 @@ Before evaluating predictive value, verify the candidate feature's data is sound
 - **NULL rate** — What percentage of rows have NULL/missing values? If >50%, the feature may not have enough signal to evaluate. Document the NULL rate for the decision framework.
 - **Cardinality** — How many distinct values? A field with 1 value is useless; a field with 10,000 unique values may need bucketing before it's useful.
 - **Distribution profile** — Is the distribution heavily skewed? If 95% of rows have the same value, the feature only distinguishes the remaining 5%.
-- **Obvious data quality issues** — Impossible values (negative ages, future dates for historical events), encoding artifacts (mixed case, trailing whitespace), or placeholder values masquerading as real data (e.g., "N/A", "Unknown", "0000-00-00").
+- **Obvious data quality issues** — Impossible values (negative ages, future dates for historical events), encoding artifacts (mixed case, trailing whitespace), or sentinel values masquerading as real data (e.g., "N/A", "Unknown", "0000-00-00").
 
 If Q0 reveals severe issues (>80% NULL, 1-2 distinct values, or widespread data corruption), stop and report the data quality problem before proceeding. A feature with bad data will produce misleading Q1-Q6 results.
 
