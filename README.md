@@ -191,7 +191,13 @@ Patterns learned from production incidents:
 > /ml-feature-evaluator
 ```
 
-The skill auto-triggers when you discuss new features, field expansions, new data sources, coverage gaps, or ask "should we add X to the model?"
+The skill auto-triggers when you discuss new features, field expansions, new data sources, coverage gaps, or ask "should we add X to the model?" Additional triggers include:
+- "We got a new CRM/HubSpot/Salesforce field — is it useful for the model?"
+- "The model has a coverage gap for [population]. Would adding [table] help?"
+- "I just got access to a new engagement/demographic/financial table"
+- "Is it worth adding demographic/behavioral/credit data to the model?"
+- "Our top feature is X. Should we break it into sub-categories?"
+- "This new data feed overlaps with what we have — is there incremental value?"
 
 <details>
 <summary>Research Foundations</summary>
@@ -243,9 +249,14 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 | Version | Changes |
 |---------|---------|
+| 2.1.0 | Enrich trigger description, add eval suite, add composability metadata (schliff score: 54.9 → 73.8) |
 | 2.0.0 | SHAP interaction detection (Q9), permutation importance with CV (Q10), concept drift monitoring (Evidently/NannyML/alibi-detect), 10 open-source tools referenced, 13 research papers cited |
 | 1.1.0 | Research-grounded thresholds (Quinlan, Brown, DeLong, Siddiqi), provenance labeling, limitations section, review panel improvements |
 | 1.0.0 | Initial release: 12-step diagnostic (Q0-Q8), temporal safety, decision framework, demo screenshots |
+
+## Acknowledgements
+
+Trigger accuracy and eval suite improved using [schliff](https://github.com/Zandereins/schliff) — an autonomous skill scoring and improvement framework (composite score: 54.9 → 73.8).
 
 ## License
 
