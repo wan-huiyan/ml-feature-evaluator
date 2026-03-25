@@ -1,7 +1,7 @@
 ---
 name: ml-feature-evaluator
-version: 2.1.0
-date: 2026-03-24
+version: 2.2.0
+date: 2026-03-25
 author: wan-huiyan
 description: >
   Structured go/no-go evaluation for adding a new feature or data source to a production ML model.
@@ -25,20 +25,37 @@ description: >
   - "Is it worth adding demographic/behavioral/credit data to the model?"
   - "Our top feature is X. Should we break it into sub-categories?"
   - "This new data feed overlaps with what we have — is there incremental value?"
+  - "Would this real-time/streaming feature be worth the latency cost?"
+  - "This text field has free-form notes — can we extract signal from it?"
+  - "Is this high-cardinality ID field useful or just noise?"
   Does NOT trigger for: model selection, hyperparameter tuning, deployment,
   code review, pull request review, training window extension, unit testing,
   bug fixing, writing tests for pipelines, feature selection for a brand-new model
   from scratch, or general ML education questions. Specifically does NOT trigger
   for tasks about code quality, test coverage, or preprocessing bug fixes — even
   if those tasks mention features, pipelines, or NULLs.
-scope: Evaluates ONE candidate feature or data source at a time against an existing (or planned) ML model. Not for bulk feature selection, model architecture, deployment, code review, testing, or training window decisions.
+scope: Evaluates ONE candidate feature or data source at a time against an existing (or planned) ML model. Not for bulk feature selection, model architecture, deployment, code review, testing, or training window decisions. For batch triage of multiple candidate signals, hand off to client-signal-triage first, which routes GO candidates here.
 input: A candidate feature/column/table name + context about the target model (what it predicts, existing features)
-output: Structured diagnostic report (Q0-Q10) with go/no-go recommendation. If GO, an implementation plan with monitoring spec and REVIEW_REQUEST block.
+output: >
+  Structured diagnostic report with sections: Q0 (data quality), Q1-Q6 (core diagnostics),
+  Q7-Q10 (contextual/advanced diagnostics), temporal safety assessment, go/no-go recommendation
+  with confidence level, and (if GO) an implementation plan with monitoring spec and REVIEW_REQUEST block.
+  Output is plain markdown suitable for parsing by downstream skills or review agents.
 dependencies: Access to the data store (BigQuery, Postgres, Snowflake, pandas) containing the candidate feature and training data. Optionally, an existing trained model for Q7-Q10.
 idempotent: true — rerunning on the same feature and data produces the same diagnostic results and recommendation
 error_behavior: If data access fails, report which diagnostic step failed and which steps can still proceed. If Q0 reveals severe data quality issues (>80% NULL, <3 distinct values), halt and report before running Q1-Q10.
 namespace: Outputs are scoped to the current conversation. No files written unless the user requests an implementation plan saved to disk.
 version_compat: Works with any tabular ML model. Requires scikit-learn >= 1.0, shap >= 0.40. Supported versions include Python 3.8+.
+composability:
+  consumes_from: client-signal-triage (receives GO candidates with preliminary data availability assessment)
+  hands_off_to:
+    - ml-training-window-assessor (when evaluation reveals training window is the binding constraint, not the feature itself)
+    - client-signal-triage (for batch evaluation of multiple candidate features — triage first, then evaluate GO candidates individually)
+  output_contract: >
+    Final output always contains: (1) a "## Recommendation" section with GO/NO-GO/DEFER verdict,
+    (2) a "## Decision Framework" summary table with per-criterion pass/fail,
+    (3) if GO, a "## Implementation Plan" section followed by a REVIEW_REQUEST block.
+    Downstream skills can parse the verdict from the Recommendation header.
 ---
 
 # ML Feature Evaluator
@@ -262,7 +279,7 @@ The expansion is worth it if **most** of these hold:
 | Population per category | Hundreds+ | Each sub-category needs enough volume for the model to learn from |
 | Temporal safety | Feasible guards exist | Date columns available and validated |
 
-These are starting points, not hard rules. Adjust based on:
+**Important:** All thresholds above are heuristic starting points derived from practitioner experience, not empirically validated universal cutoffs. They work well as defaults but should be calibrated to your domain, data scale, and pipeline complexity. A 2x outcome gradient may be transformative in a low-signal domain; a 5x gradient may be insufficient if integration cost is extreme. Adjust based on:
 - **Pipeline complexity:** Higher integration cost → higher bar for evidence
 - **Project timeline:** Wrapping up soon → only pursue if gains are exceptional
 - **Feature count:** Already feature-rich → need stronger incremental evidence
@@ -349,78 +366,30 @@ Output a structured review with: PASS (no issues), WARN (minor concerns), or BLO
 
 **If you ARE running as a top-level agent** (not a subagent) and can confirm you have Agent tool access, you may spawn the reviewer directly instead of outputting REVIEW_REQUEST. But default to the two-stage pattern — it works in all contexts.
 
-## Implementation Plan Review — Common Bugs
+## Implementation Plan Review — Common Bugs Checklist
 
-After producing a plan and having it reviewed (either by a fresh subagent or a human), these are the patterns most likely to surface. Build awareness of them while *writing* the plan so the reviewer catches fewer issues.
+Watch for these patterns while writing the plan. Each is a silent-breakage risk that reviewers should verify.
 
-### Backward-Compat Category Name Mismatch
-
-When expanding a categorical (e.g., 4 stages → 7), the fallback/`else` branch for old data must use the **old** category names, not the new ones. If old models were trained on `"Applied & Submitted"` and the fallback produces `"Applied – In Process"`, XGBoost sees an unseen category and silently produces wrong predictions. This is the single most common silent-breakage bug in categorical expansions.
-
-**Rule:** The fallback path should emit the exact category string the old model was trained on.
-
-### Schema Declaration vs Output SELECT Drift
-
-When adding intermediate columns (used for temporal gating inside a CTE but not needed in the final output), don't add them to the output schema declaration unless they're also in the output SELECT. Dataform and similar tools enforce alignment — listing a column in the schema that isn't selected will fail at compile time.
-
-**Rule:** Only declare columns in the schema that appear in the final SELECT.
-
-### Dead Code from Temporal Gating
-
-When temporal guards gate on a date column that is NULL for most records in a category, the guard effectively nullifies the status code for those records. The explicit code set you wrote to match them becomes dead code — the records reach the correct bucket only through the fallback path.
-
-**Concrete example:** You define `IN_PROCESS_CODES = {'IP', 'IPR', 'IPA'}` and write `df.loc[submitted & status.isin(IN_PROCESS_CODES), stage_col] = 'In Process'`. But your SQL temporal guard does `CASE WHEN decision_date IS NOT NULL AND decision_date <= target_date THEN application_status ELSE NULL END`. If 99% of IP records have no `decision_date`, their status comes through as NULL. Python fills NULL with `""`. `""` isn't in `IN_PROCESS_CODES`. Those records fall to the fallback: `df.loc[submitted & (df[stage_col] == default), stage_col] = 'In Process'`. The result is correct — but the explicit code set matched almost nobody. The fallback is doing all the work.
-
-**Why this matters beyond code review:** When advising someone on implementation, proactively warn them that temporal gating + explicit code sets interact in surprising ways. The code sets handle the minority of records with date columns populated; the fallback handles the majority. If they don't understand this, they'll write tests against the code sets and miss that the fallback is the real classification path. If the fallback has a bug, it affects 99% of records, not 1%.
-
-**Rule:** When writing code sets paired with temporal guards, trace the actual data flow end-to-end. Document which path is primary vs secondary. Design your fallback as carefully as your explicit matching — it's the main path, not the edge case.
-
-### Snapshot Tables Can't Reconstruct Intermediate States
-
-When a record transitions through states (e.g., Accepted → Deposited → Withdrawn), a snapshot table only shows the terminal state. At a target_date between deposit and withdrawal, the temporal guard may hide the withdrawal (decision_date > target_date), but the underlying status is already "Withdrawn" — there's no way to recover the "Accepted & Deposited" state the record passed through. These students get classified by whatever the fallback produces (often "In Process" or "Unknown").
-
-**Rule:** Document populations affected by this gap. If the count is small and the fallback is conservative (under-counts, never over-counts), accept it. If large, consider alternative temporal anchors.
-
-### Explicit Code Sets vs Wildcard/Prefix Matching
-
-Clients often define groupings by prefix (`A*` = Accepted, `W*` = Withdrawn). Implementation plans often use explicit sets (`{'AD', 'AF', 'AP', ...}`). Explicit sets are safer (no false positives from new codes matching a prefix), but silently misclassify future codes the client adds.
-
-**Rule:** Use explicit sets for safety, but add a monitoring check that logs a warning when an unrecognized code appears. Example:
-```python
-unknown = observed_codes - known_accepted - known_closed - known_in_process
-if unknown:
-    logger.warning(f"Unknown status codes defaulting to fallback: {unknown}")
-```
-
-### Fallback Sentinel Conflation
-
-When a fallback path checks `df[stage_col] == 'No Application'` to catch submitted records whose status code was NULL (temporally gated away), it conflates two different meanings of `'No Application'`: (1) the student genuinely has no application, and (2) the student submitted but their status code was nullified by the temporal guard. Both leave `stage_col` at its default value. The fallback works correctly (submitted students are already filtered by a `submitted` mask), but the logic is fragile — if the default value changes or the mask has a bug, the conflation can cause misclassification.
-
-**Rule:** Prefer checking for NULL status explicitly (`df['status_code'].isna()`) over checking for a sentinel default value. This makes the intent clear and doesn't depend on upstream initialization.
-
-### Category Ordering in Ordinal Encoding
-
-`pd.Categorical` assigns integer codes by list position. If the category list puts a terminal-negative state (e.g., "Rejected/Withdrawn") at a higher ordinal position than a terminal-positive state (e.g., "Deposited"), the ordinal encoding is semantically non-monotonic. Tree models handle this fine (they split on thresholds, not direction), but it can confuse humans reading the encoding and may subtly affect linear components if present.
-
-**Rule:** Order categories from least to most positive when possible: No Application → Closed → Not Submitted → In Process → Accepted → Deposited.
+| Bug | Rule | Why It Matters |
+|-----|------|---------------|
+| **Backward-compat category name mismatch** | Fallback/`else` branch must emit the **old** category strings the existing model was trained on, not the new names | XGBoost silently produces wrong predictions on unseen categories |
+| **Schema vs SELECT drift** | Only declare columns in the output schema that appear in the final SELECT | Dataform/dbt enforce alignment — intermediate CTE columns in the schema fail at compile time |
+| **Dead code from temporal gating** | When temporal guards NULL out most records' status codes, the fallback path becomes the primary classification path — design it accordingly | Tests written against explicit code sets miss that 99% of records flow through the fallback |
+| **Snapshot tables lack history** | Snapshot tables show terminal state only; temporal guards can't reconstruct intermediate states (e.g., Accepted → Deposited → Withdrawn) | Document affected populations; accept if small and conservative, otherwise find alternative temporal anchors |
+| **Explicit sets vs prefix matching** | Use explicit code sets but add monitoring for unrecognized values: `logger.warning(f"Unknown codes: {observed - known}")` | Explicit sets are safe today but silently misclassify future codes the client adds |
+| **Fallback sentinel conflation** | Check `df['status_code'].isna()` instead of `df[stage_col] == 'No Application'` | Sentinel values conflate "genuinely missing" with "temporally gated away" — fragile if defaults change |
+| **Category ordering** | Order categories least-to-most positive: No Application → Closed → In Process → Accepted → Deposited | Non-monotonic ordinal encoding confuses humans and can affect linear model components |
 
 ## Source Priority When Two Sources Cover the Same Event
 
-When a CRM date field and a behavioral event both record the same real-world event (e.g., a deposit), **coverage determines which is the source of truth** — not which source is "richer" or "more behavioral."
-
-**Rule:** Put the higher-coverage source first in COALESCE. If SF `enr_dep_date` covers 100% of deposits and `deposit_payment_success` events cover 27%, the COALESCE should be `COALESCE(sf_date, event_date)` — not the reverse.
-
-**Complementary vs. substitutable:** CRM state fields and behavioral event features are usually *complementary*, not interchangeable:
-- CRM captures *state* and *coverage* (accepted: yes/no, for 100% of accepted students)
-- Events capture *frequency* and *recency* (logged in 10 times, visited 3 pages)
-
-Replace only when sources capture truly identical information. When they capture the same event differently (state vs. frequency), keep both.
-
-**Concrete guidance:** If SF `enr_dep_date` records whether/when a deposit happened (state), and a `deposit_payment_success` event records portal-tracked payments only (27% coverage), the event is not a substitute — it's a complement for the 27% it covers, and a weaker one at that.
+- **Coverage determines COALESCE order** — put the higher-coverage source first, not the "richer" one
+- **CRM vs behavioral sources are usually complementary, not substitutable:** CRM captures state/coverage; events capture frequency/recency. Keep both unless they capture truly identical information
+- When a CRM field covers 100% and a behavioral event covers 27% of the same real-world event, the CRM is the primary source
 
 ## Related Skills
 
 - **`ml-training-window-assessor`**: When the question is "can we extend the training window?" rather than "should we add feature X?" — covers per-output label validity, lookforward bridging, and companion model vs extended training architecture decisions.
+- **`client-signal-triage`**: When a client sends a batch of candidate signals (email, field list, meeting notes) — triages into GO/DEFER/NO-GO by data availability, then routes GO candidates here for full diagnostic. Use triage first when evaluating >3 candidates.
 
 ## Open-Source Tools and Benchmarks
 
