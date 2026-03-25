@@ -1,7 +1,7 @@
 ---
 name: ml-feature-evaluator
 version: 2.2.0
-date: 2026-03-30
+date: 2026-03-25
 author: wan-huiyan
 description: >
   Structured go/no-go evaluation for adding a new feature or data source to a production ML model.
@@ -242,33 +242,23 @@ mean_importances = np.mean(all_importances, axis=0)
 
 Before recommending integration, check for temporal leakage — using future information to predict present outcomes.
 
-1. **Classify the source into one of three types** before designing temporal guards:
+1. **Is the source table a snapshot or historical?** CRM tables (Salesforce, HubSpot) are often current-state snapshots, not event logs. A field showing "Accepted" today may not have been "Accepted" at the historical training date.
 
-   | Type | Description | Temporal Guard Strategy |
-   |------|-------------|------------------------|
-   | **Current-state snapshot** | One row per entity, latest state only. CRM tables (Salesforce, HubSpot) are often this. | Gate with date columns (`decision_date <= target_date`). Conservative: intermediate states are lost. |
-   | **Event log / append-only** | One row per event, immutable once written. Behavioral tracking, application logs. | Filter by `event_date <= target_date`. No state reconstruction needed. |
-   | **Versioned history** | Multiple rows per entity with validity windows. SCD Type 2, CDC, changelogs, audit tables. | Range query: `valid_from <= target_date AND (valid_to IS NULL OR valid_to > target_date)`. Provides exact point-in-time state. |
-
-   A field showing "Accepted" today may not have been "Accepted" at a historical training date. Snapshot tables cannot reconstruct intermediate states; versioned history tables can. **Always check whether a versioned history source exists for the same data before relying on snapshot temporal guards** — information gain measurements from snapshot data may be understated due to guard-induced information loss.
-
-   When both a snapshot and versioned source exist for the same entity, consider a **dual-source strategy**: use the versioned source for training (exact historical state) and the snapshot for serving (real-time current state). This is safe when serving always uses `target_date = today`, where the snapshot's current state IS the correct point-in-time state. Document the asymmetry explicitly so future developers understand why training and serving SQL differ.
-
-2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`. For versioned history sources, use the validity window columns instead (`valid_from`/`valid_to` or equivalent).
+2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`.
 
 3. **Do the date columns mean what they say?** "Last modified" dates often record the most recent touch, not the initial event. Validate by checking ordering against related events. If anomalous ordering is common (>10%), treat as "last modified" and use conservatively.
 
 4. **What happens when the date is NULL or in the future?** Default to the most conservative interpretation — treat as "unknown" or "not yet occurred."
 
-5. **Leakage is relative to the label, not intermediate milestones.** An ordering anomaly vs. an *intermediate* event (e.g., `decision_date` AFTER `deposit_date`) is NOT leakage unless it also post-dates the *label* event.
+5. **Temporal leakage is relative to the label, not intermediate milestones.** A field being anomalously ordered relative to another *intermediate* event (e.g., `decision_date` AFTER `deposit_date`) is NOT leakage unless the field also post-dates the *label* event. Before flagging an ordering anomaly as leakage, explicitly identify the label field and ask: "does this feature contain information from after the label, or just after some earlier step?" If the answer is the latter, it's conservative under-counting, not leakage.
 
-6. **Validate co-occurrence before excluding fields.** Run `SELECT COUNT(*) WHERE field_x IS NOT NULL AND gating_field IS NULL` — if 0, `gating_field` safely bounds `field_x`.
+6. **Validate field co-occurrence with a zero-count query before excluding a field.** If a CRM field has no dedicated timestamp but you suspect another field implicitly bounds it (e.g., all merit award rows have a `decision_date`), run: `SELECT COUNT(*) WHERE field_x IS NOT NULL AND gating_field IS NULL`. If the result is 0, `gating_field` safely bounds `field_x`. This is cheap and resolves uncertainty without requiring client clarification.
 
-7. **Observation point ≠ journey step.** `target_date` is where the model *observes*; the real-world process has its own timeline. Conflating these causes temporal guard design errors.
+7. **"Observation point" vs. "journey step" framing.** In training pipelines with a `target_date`, be explicit: `target_date` is where the model *observes*, not a step in the process being modeled. The real-world process has its own timeline (e.g., Application → Acceptance → Deposit → Enrollment). At `target_date`, the model sees wherever the entity currently is on that timeline. Conflating the two causes temporal guard design errors.
 
-8. **Proxy leakage through causal structure.** A temporally safe feature can still leak if it's a near-deterministic proxy for the label (e.g., 99% of orientation attendees enroll). Check: does the feature's causal path go *through* the outcome? (Kapoor & Narayanan, 2023)
+8. **Proxy leakage through causal structure.** A feature might not directly encode future information, but it could be a proxy for the label through a causal path. For example, "number of orientation sessions attended" might be safe temporally (all sessions happened before the label date), but if 99% of students who attend orientation also enroll, the feature is essentially encoding the label through a near-deterministic proxy. Check: does the feature have a causal path that goes *through* the outcome? If so, is the correlation explained by the causal structure (legitimate signal) or by the feature being a disguised version of the label (leakage)? (Kapoor & Narayanan, *Patterns* 2023)
 
-9. **Preprocessing leakage.** Full-dataset statistics (mean/std normalization, target encoding) before train/test split = invisible leakage. All preprocessing must use training-fold statistics only. (Yang et al., 2022)
+9. **Preprocessing leakage.** Feature engineering that uses statistics computed from the full dataset (train + test) introduces leakage even if the underlying data is clean. Common examples: normalizing with full-dataset mean/std before train/test split, target encoding using all rows, or imputing with population-level statistics. This type of leakage is invisible in the data — it only exists in the code. The implementation plan review should explicitly check that all preprocessing uses only training-fold statistics. (Yang et al., ASE 2022)
 
 ## Decision Framework
 
@@ -312,7 +302,19 @@ If the diagnostic says yes, produce an implementation plan covering:
    - **Feature freshness** — does the serving pipeline compute this feature at the same granularity/recency as training? For batch pipelines, this is usually fine; for real-time, stale cache reads can introduce train/serve skew.
    - **Unknown value alerting** — for categoricals, log and alert when unrecognized values appear (new status codes, new tiers). This catches the "client added a code we didn't map" failure mode.
 
-   **Concept drift monitoring** — Track distributional shifts post-deployment using PSI (>0.2 = significant), Wasserstein distance (continuous features), or KS test (p < 0.05, but oversensitive at >50k rows). Tools: Evidently AI for dashboards, alibi-detect for pipeline tests, NannyML CBPE for performance estimation without ground truth labels.
+   **Concept drift monitoring** — Track distributional shifts in the new feature post-deployment:
+   - **Recommended tools**: Evidently AI (7.3k stars) for dashboards/reports, alibi-detect (2.5k stars) for programmatic pipeline tests, NannyML (2.1k stars) for performance estimation without ground truth
+   - **Method selection guide**:
+     | Method | Best For | Threshold |
+     |--------|----------|-----------|
+     | PSI | Categorical + numerical; industry standard | >0.2 = significant drift |
+     | Wasserstein distance | Continuous features; captures magnitude | Domain-specific |
+     | KS test | Continuous features; any distributional change | p < 0.05 |
+     | Jensen-Shannon divergence | General-purpose; binned distributions | >0.1 = investigate |
+     | MMD | Multivariate/high-dimensional drift | Permutation test p < 0.05 |
+   - **Practical guidance**: Wasserstein provides the best balance of sensitivity and stability for numerical features. PSI is the pragmatic choice for a single alerting threshold. KS test is oversensitive with large samples (>50k rows).
+   - **Performance without labels**: NannyML's CBPE (Confidence-Based Performance Estimation) can estimate model performance degradation before ground truth labels are available — critical for features where labels arrive with delay.
+   - Reference: "Open-Source Drift Detection Tools in Action", arXiv 2024 (arXiv:2404.18673)
 
 ## Critical Review Step
 
@@ -373,11 +375,10 @@ Watch for these patterns while writing the plan. Each is a silent-breakage risk 
 | **Backward-compat category name mismatch** | Fallback/`else` branch must emit the **old** category strings the existing model was trained on, not the new names | XGBoost silently produces wrong predictions on unseen categories |
 | **Schema vs SELECT drift** | Only declare columns in the output schema that appear in the final SELECT | Dataform/dbt enforce alignment — intermediate CTE columns in the schema fail at compile time |
 | **Dead code from temporal gating** | When temporal guards NULL out most records' status codes, the fallback path becomes the primary classification path — design it accordingly | Tests written against explicit code sets miss that 99% of records flow through the fallback |
-| **Snapshot tables lack history** | Snapshot tables show terminal state only; check for versioned history sources (SCD, CDC, changelogs) that provide exact point-in-time state. Test ALL ID-like columns for join overlap — don't conclude "no bridge" from one column. | Affects populations where entities transition through states; versioned sources eliminate the gap entirely |
+| **Snapshot tables lack history** | Snapshot tables show terminal state only; temporal guards can't reconstruct intermediate states (e.g., Accepted → Deposited → Withdrawn) | Document affected populations; accept if small and conservative, otherwise find alternative temporal anchors |
 | **Explicit sets vs prefix matching** | Use explicit code sets but add monitoring for unrecognized values: `logger.warning(f"Unknown codes: {observed - known}")` | Explicit sets are safe today but silently misclassify future codes the client adds |
 | **Fallback sentinel conflation** | Check `df['status_code'].isna()` instead of `df[stage_col] == 'No Application'` | Sentinel values conflate "genuinely missing" with "temporally gated away" — fragile if defaults change |
 | **Category ordering** | Order categories least-to-most positive: No Application → Closed → In Process → Accepted → Deposited | Non-monotonic ordinal encoding confuses humans and can affect linear model components |
-| **Re-export noise in versioned history** | Filter consecutive rows with identical state using `LAG()` when computing transition-based features | SCD/CDC tables often contain system re-exports that inflate transition counts |
 
 ## Source Priority When Two Sources Cover the Same Event
 
@@ -407,16 +408,27 @@ Watch for these patterns while writing the plan. Each is a silent-breakage risk 
 
 ## References
 
-Lundberg & Lee, NeurIPS 2017 (SHAP) · Muschalik et al., NeurIPS 2024 (shapiq) · SHAP-IQ, NeurIPS 2023 · Quinlan, 1993 (gain ratio) · Brown et al., JMLR 2012 (JMI/conditional MI) · Kaufman et al., KDD 2011 (leakage) · Kapoor & Narayanan, Patterns 2023 (proxy leakage) · Yang et al., ASE 2022 (preprocessing leakage) · Kraev et al., arXiv 2024 (shap-select) · Molnar, "Interpretable ML" Ch. 18
+### Key Research Papers
+- Lundberg & Lee, "A Unified Approach to Interpreting Model Predictions" — NeurIPS 2017 (SHAP)
+- Muschalik et al., "shapiq: Shapley Interactions for ML" — NeurIPS 2024 (any-order interactions)
+- SHAP-IQ: "Unified Approximation of any-order Shapley Interactions" — NeurIPS 2023
+- Molnar, "Interpretable Machine Learning" book — Chapter 18 (SHAP interaction values)
+- Kraev et al., "Shap-Select: Lightweight Feature Selection Using SHAP Values" — arXiv 2024 (arXiv:2410.06815)
+- "Conditional Feature Importance Revisited" — arXiv 2026 (arXiv:2501.17520, Sobol-CPI)
+- "One Permutation Is All You Need" — arXiv 2024 (arXiv:2512.13892)
+- "Open-Source Drift Detection Tools in Action" — arXiv 2024 (arXiv:2404.18673)
+- Quinlan, "C4.5: Programs for Machine Learning" — 1993 (gain ratio)
+- Kaufman, Rosset & Perlich — KDD 2011 (leakage detection)
+- Brown et al., "Conditional Likelihood Maximisation" — JMLR 2012 (JMI)
+- Kapoor & Narayanan — Patterns 2023 (proxy leakage)
+- Yang et al. — ASE 2022 (preprocessing leakage)
 
 ## Anti-Patterns to Avoid
 
 - **Skipping coverage gap analysis:** The most common mistake. A new source looks amazing in isolation but adds nothing over existing features.
 - **Trusting field names:** "application_status" might mean current status, historical status, or something else entirely. Always validate against raw data and documentation.
 - **Guessing code meanings from abbreviations:** AF doesn't mean "Application Filed" — it means "Accepted, Pending Final Transcript." Cross-reference against client documentation.
-- **Assuming snapshot tables have history:** If the table gets upserted, yesterday's values are gone. Check sibling datasets for versioned history (SCD, CDC, changelogs, audit tables) before accepting the snapshot's temporal limitations. A "zero overlap" on one join key doesn't mean no bridge exists — test ALL ID-like columns before concluding.
-- **Evaluating features from snapshots without checking for versioned alternatives:** Information gain and coverage gap measurements from snapshot data may be understated due to temporal guard information loss. If a versioned source exists, re-run the evaluation using exact point-in-time state — the results may be significantly different.
-- **Re-export noise in versioned history tables:** Consecutive rows with identical state (but different validity timestamps) are often system re-exports, not real transitions. Filter with `LAG()` when computing transition-based features like status change counts.
+- **Assuming snapshot tables have history:** If the table gets upserted, yesterday's values are gone. Check for incremental/history variants, and validate whether they actually preserve history.
 - **Forgetting to monitor for new codes:** Explicit code sets are safe until the client adds a new status code that silently falls to the default. Always add runtime logging for unrecognized values.
 - **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "behavioral source primary, CRM fallback" when the CRM covers more students.
 - **Flagging intermediate-milestone ordering anomalies as leakage:** Check ordering against the *label*, not against other intermediate events in the pipeline.

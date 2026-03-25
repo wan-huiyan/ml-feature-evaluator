@@ -432,6 +432,82 @@
       ]
     },
     {
+      "id": "tc-6a",
+      "prompt": "We want to add a CRM field 'application_decision_date' from a Salesforce snapshot table. The table is upserted daily. Evaluate for our enrollment prediction model.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "snapshot",
+          "description": "Identifies snapshot table temporal risk"
+        },
+        {
+          "type": "contains",
+          "value": "temporal",
+          "description": "Runs temporal safety checklist"
+        },
+        {
+          "type": "pattern",
+          "value": "guard|gate|date.*<=|target_date",
+          "description": "Proposes temporal guards"
+        },
+        {
+          "type": "contains",
+          "value": "leakage",
+          "description": "Discusses leakage risk from snapshot tables"
+        }
+      ]
+    },
+    {
+      "id": "tc-6b",
+      "prompt": "Evaluate adding SAT_score to our admissions yield model. We have the trained XGBoost model and can run experiments. I want the full diagnostic including SHAP and permutation importance.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "SHAP",
+          "description": "Includes SHAP interaction analysis (Q9)"
+        },
+        {
+          "type": "contains",
+          "value": "permutation",
+          "description": "Includes permutation importance (Q10)"
+        },
+        {
+          "type": "pattern",
+          "value": "AUC|cross-validation|CV",
+          "description": "Includes incremental CV AUC (Q8)"
+        },
+        {
+          "type": "contains",
+          "value": "implementation",
+          "description": "Produces implementation plan if GO"
+        },
+        {
+          "type": "pattern",
+          "value": "REVIEW_REQUEST|REVIEW NEEDED|review agent",
+          "description": "Includes mandatory review step"
+        }
+      ]
+    },
+    {
+      "id": "tc-6c",
+      "prompt": "The diagnostic shows 15x outcome gradient for our new feature. Is that suspicious?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "leakage",
+          "description": "Flags implausibly strong gradient for leakage investigation"
+        },
+        {
+          "type": "pattern",
+          "value": "10x|suspicious|implausib|too.good|ceiling",
+          "description": "References the leakage plausibility ceiling"
+        }
+      ]
+    },
+    {
       "id": "tc-6",
       "prompt": "Run the feature evaluation diagnostic on campus_visit_count. I have BigQuery access.",
       "input_files": [],
