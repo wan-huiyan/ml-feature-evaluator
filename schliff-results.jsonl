@@ -1,0 +1,1 @@
+{"exp": 1, "timestamp": "2026-03-25T00:50:25Z", "trigger": "bench", "composite_score": 75.4, "pass_rate": "35/35", "scores": {"structure": 85, "triggers": 84, "quality": 67, "edges": 92, "efficiency": 38, "composability": 81, "clarity": 61}}
