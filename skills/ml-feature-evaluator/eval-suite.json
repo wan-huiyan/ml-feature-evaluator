@@ -109,6 +109,27 @@
       "notes": "Generic candidate feature evaluation request"
     },
     {
+      "id": "pos-16",
+      "prompt": "Would adding real-time page view counts from our streaming pipeline be worth the latency trade-off for our batch model?",
+      "should_trigger": true,
+      "category": "positive",
+      "notes": "Streaming/real-time feature evaluation with latency concern"
+    },
+    {
+      "id": "pos-17",
+      "prompt": "We have a free-text notes field from advisors. Can we extract any signal from it for the enrollment model?",
+      "should_trigger": true,
+      "category": "positive",
+      "notes": "Text/NLP feature evaluation"
+    },
+    {
+      "id": "pos-18",
+      "prompt": "The student_id field has high cardinality but I wonder if it encodes useful info when combined with other features",
+      "should_trigger": true,
+      "category": "positive",
+      "notes": "High-cardinality feature evaluation"
+    },
+    {
       "id": "neg-1",
       "prompt": "Can you review this pull request for code quality issues?",
       "should_trigger": false,
@@ -411,6 +432,82 @@
       ]
     },
     {
+      "id": "tc-6a",
+      "prompt": "We want to add a CRM field 'application_decision_date' from a Salesforce snapshot table. The table is upserted daily. Evaluate for our enrollment prediction model.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "snapshot",
+          "description": "Identifies snapshot table temporal risk"
+        },
+        {
+          "type": "contains",
+          "value": "temporal",
+          "description": "Runs temporal safety checklist"
+        },
+        {
+          "type": "pattern",
+          "value": "guard|gate|date.*<=|target_date",
+          "description": "Proposes temporal guards"
+        },
+        {
+          "type": "contains",
+          "value": "leakage",
+          "description": "Discusses leakage risk from snapshot tables"
+        }
+      ]
+    },
+    {
+      "id": "tc-6b",
+      "prompt": "Evaluate adding SAT_score to our admissions yield model. We have the trained XGBoost model and can run experiments. I want the full diagnostic including SHAP and permutation importance.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "SHAP",
+          "description": "Includes SHAP interaction analysis (Q9)"
+        },
+        {
+          "type": "contains",
+          "value": "permutation",
+          "description": "Includes permutation importance (Q10)"
+        },
+        {
+          "type": "pattern",
+          "value": "AUC|cross-validation|CV",
+          "description": "Includes incremental CV AUC (Q8)"
+        },
+        {
+          "type": "contains",
+          "value": "implementation",
+          "description": "Produces implementation plan if GO"
+        },
+        {
+          "type": "pattern",
+          "value": "REVIEW_REQUEST|REVIEW NEEDED|review agent",
+          "description": "Includes mandatory review step"
+        }
+      ]
+    },
+    {
+      "id": "tc-6c",
+      "prompt": "The diagnostic shows 15x outcome gradient for our new feature. Is that suspicious?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "leakage",
+          "description": "Flags implausibly strong gradient for leakage investigation"
+        },
+        {
+          "type": "pattern",
+          "value": "10x|suspicious|implausib|too.good|ceiling",
+          "description": "References the leakage plausibility ceiling"
+        }
+      ]
+    },
+    {
       "id": "tc-6",
       "prompt": "Run the feature evaluation diagnostic on campus_visit_count. I have BigQuery access.",
       "input_files": [],
@@ -501,6 +598,71 @@
           "type": "pattern",
           "value": "pandas|dataframe|read_csv|df|csv",
           "description": "Adapts to CSV/pandas workflow"
+        }
+      ]
+    },
+    {
+      "id": "ec-6",
+      "prompt": "We want to add a user_id column that has 500,000 unique values to our model. Is it worth it?",
+      "category": "high_cardinality",
+      "expected_behavior": "Flag high cardinality as a problem — raw IDs are not useful features. Suggest aggregation, embedding, or target encoding instead of using the raw ID.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "cardinality|encoding|target.encod|embed|aggregat|group|bucket|hash",
+          "description": "Addresses high cardinality and suggests encoding strategies"
+        }
+      ]
+    },
+    {
+      "id": "ec-7",
+      "prompt": "Should we add the free-text 'advisor_notes' field to our enrollment model? It has unstructured text like 'Student expressed strong interest in nursing program'",
+      "category": "text_nlp_feature",
+      "expected_behavior": "Acknowledge this requires NLP preprocessing (embeddings, TF-IDF, or keyword extraction) before it can be evaluated as a tabular feature. Adapt the diagnostic accordingly.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "text|NLP|embed|TF-IDF|tfidf|tokeniz|extract|unstructured|sentiment|vectoriz",
+          "description": "Recognizes text feature requires NLP preprocessing"
+        }
+      ]
+    },
+    {
+      "id": "ec-8",
+      "prompt": "We have a real-time clickstream feature from Kafka that shows pages viewed in the last 5 minutes. Should we add it to our batch-scored propensity model?",
+      "category": "streaming_batch_mismatch",
+      "expected_behavior": "Flag the train/serve skew risk — a real-time feature used in a batch model creates a freshness mismatch. Discuss whether the batch equivalent (e.g., pages viewed in last session) would be more appropriate.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "train.serv|batch|real.time|fresh|latency|skew|mismatch|staleness",
+          "description": "Identifies train/serve skew from real-time feature in batch model"
+        }
+      ]
+    },
+    {
+      "id": "ec-9",
+      "prompt": "Should we add race/ethnicity as a feature to improve our admissions yield model?",
+      "category": "fairness_sensitive",
+      "expected_behavior": "Flag this as a protected attribute. Discuss fairness implications, legal constraints (e.g., disparate impact), and whether the feature should be used for prediction vs. only for bias auditing.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "protected|fairness|bias|ethic|legal|disparate|discriminat|sensitive|regulat",
+          "description": "Raises fairness and legal concerns for protected attributes"
+        }
+      ]
+    },
+    {
+      "id": "ec-10",
+      "prompt": "We have a time-series feature — daily login counts for the past 90 days per student. Should we add it as 90 separate columns?",
+      "category": "time_series_feature",
+      "expected_behavior": "Advise against 90 raw columns. Suggest aggregation strategies (rolling averages, trend slopes, recency-weighted sums) or sequence model approaches instead.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "aggregat|rolling|average|trend|slope|window|recency|sequence|summary|compress",
+          "description": "Suggests aggregation over raw time-series columns"
         }
       ]
     }
