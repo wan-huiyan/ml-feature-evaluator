@@ -302,7 +302,7 @@ If the diagnostic says yes, produce an implementation plan covering:
 2. **Temporal guards** — Exact SQL for date-based gating
 3. **Feature encoding** — How raw values map to model features (categorical levels, groupings)
 4. **Preprocessing parity** — Every file that needs updating (train, serve, config, data loader)
-5. **Display/reporting** — Feature names, data dictionary, client-facing labels
+5. **Display/reporting** — Feature names, data dictionary, client-facing labels. **Full-document audit:** When a new data source is added, grep ALL client-facing documents (PDFs, slides, reports) for every section that references data sources, signal counts, or source lists — not just the section you're editing. Common miss: updating an appendix but leaving the executive summary saying "two data sources" when there are now three.
 6. **Testing strategy** — How to validate before deploying (A/B, shadow scoring, offline eval)
 7. **Rollback plan** — How to revert if something goes wrong
 8. **Monitoring spec** — Post-deployment feature health contract (inspired by Uber's Model Excellence Scores and Google's TFDV):
@@ -348,7 +348,7 @@ Check for:
 1. **Preprocessing parity gaps** — Does the plan update ALL files that need to stay in sync?
 2. **Temporal leakage** — Are the proposed date guards actually safe? What edge cases are missed?
 3. **Missing rollback plan** — What happens if this breaks production scoring?
-4. **Display/label correctness** — Are all proposed display names validated against source documentation?
+4. **Display/label correctness** — Are all proposed display names validated against source documentation? Are ALL sections of client-facing documents consistent (executive summary, data sources, appendices)?
 5. **Population edge cases** — What happens for NULL values, missing joins, new codes that appear after deployment?
 6. **Testing gaps** — What isn't covered by the proposed testing strategy?
 7. **Scope creep** — Is the plan doing more than necessary? Could it be simpler?
@@ -419,4 +419,5 @@ Lundberg & Lee, NeurIPS 2017 (SHAP) · Muschalik et al., NeurIPS 2024 (shapiq) �
 - **Re-export noise in versioned history tables:** Consecutive rows with identical state (but different validity timestamps) are often system re-exports, not real transitions. Filter with `LAG()` when computing transition-based features like status change counts.
 - **Forgetting to monitor for new codes:** Explicit code sets are safe until the client adds a new status code that silently falls to the default. Always add runtime logging for unrecognized values.
 - **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "behavioral source primary, CRM fallback" when the CRM covers more students.
+- **Updating appendix but not body of client docs:** When adding a new data source, grep the entire document generator for "data source", source counts ("two", "three"), and source names. Executive summaries, methodology sections, and appendices must all be consistent. A client seeing "two data sources" on page 1 and Snowflake on page 8 loses trust.
 - **Flagging intermediate-milestone ordering anomalies as leakage:** Check ordering against the *label*, not against other intermediate events in the pipeline.
