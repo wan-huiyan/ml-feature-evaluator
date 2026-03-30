@@ -1,6 +1,6 @@
 {
   "skill_name": "ml-feature-evaluator",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "created_by": "schliff",
   "triggers": [
     {
@@ -214,6 +214,34 @@
       "notes": "Training window question — belongs to ml-training-window-assessor"
     },
     {
+      "id": "neg-13",
+      "prompt": "Remove the 5 lowest-importance features from the model to reduce complexity",
+      "should_trigger": false,
+      "category": "negative",
+      "notes": "Feature removal/pruning, not feature addition or evaluation"
+    },
+    {
+      "id": "neg-14",
+      "prompt": "The feature pipeline is returning NULL for 30% of records in the status_code column — can you debug the SQL join?",
+      "should_trigger": false,
+      "category": "negative",
+      "notes": "Pipeline debugging — mentions features and NULLs but is a bug fix task"
+    },
+    {
+      "id": "neg-15",
+      "prompt": "Set up a centralized feature store using Feast so our ML teams can share features",
+      "should_trigger": false,
+      "category": "negative",
+      "notes": "Feature store infrastructure, not feature evaluation"
+    },
+    {
+      "id": "neg-16",
+      "prompt": "Should we stack predictions from our churn model as an input feature to the upsell model?",
+      "should_trigger": false,
+      "category": "negative",
+      "notes": "Model stacking / ensemble architecture — not raw feature evaluation"
+    },
+    {
       "id": "edge-1",
       "prompt": "I removed a feature from the model and AUC went up. Should I also remove the related features?",
       "should_trigger": false,
@@ -307,6 +335,21 @@
           "description": "Checks temporal safety"
         },
         {
+          "type": "pattern",
+          "value": "Q1.*Q2|Q2.*Q3|Q0.*Q1",
+          "description": "Diagnostic steps appear in sequential order (Q0 before Q1, Q1 before Q2, etc.)"
+        },
+        {
+          "type": "pattern",
+          "value": "GO|NO.GO|DEFER|Recommendation",
+          "description": "Produces a clear go/no-go verdict in a recommendation section"
+        },
+        {
+          "type": "pattern",
+          "value": "NULL.*rate|NULL.*%|missing.*%|missing.*rate",
+          "description": "Reports NULL rate quantitatively, not just mentions NULLs"
+        },
+        {
           "type": "response_excludes",
           "value": "I cannot",
           "description": "Does not refuse the task"
@@ -329,14 +372,29 @@
           "description": "Uses gain ratio for cardinality-aware evaluation"
         },
         {
-          "type": "contains",
-          "value": "go",
-          "description": "Provides a go/no-go recommendation"
+          "type": "pattern",
+          "value": "GO|NO.GO|DEFER",
+          "description": "Provides an explicit GO/NO-GO/DEFER verdict"
         },
         {
           "type": "contains",
           "value": "implementation",
           "description": "Includes implementation plan if GO"
+        },
+        {
+          "type": "pattern",
+          "value": "entropy.*reduction|information.*gain|entropy.*%",
+          "description": "Reports entropy reduction quantitatively for the expansion"
+        },
+        {
+          "type": "pattern",
+          "value": "Q3|sub.categor|split|decompos",
+          "description": "Runs Q3 bucket decomposition specifically for the expansion"
+        },
+        {
+          "type": "contains",
+          "value": "Quinlan",
+          "description": "References Quinlan 1993 when discussing gain ratio"
         },
         {
           "type": "response_excludes",
@@ -351,9 +409,9 @@
       "input_files": [],
       "assertions": [
         {
-          "type": "contains",
-          "value": "conditional",
-          "description": "Uses conditional MI to test incremental value"
+          "type": "pattern",
+          "value": "conditional.*mutual.*information|conditional.*MI|I\\(.*\\|.*\\)",
+          "description": "Uses conditional MI (Q7) specifically to test incremental value"
         },
         {
           "type": "contains",
@@ -369,6 +427,16 @@
           "type": "contains",
           "value": "leakage",
           "description": "Checks for temporal leakage"
+        },
+        {
+          "type": "pattern",
+          "value": "Q7|Brown|JMI|conditional",
+          "description": "References Q7 or the Brown et al. framework for conditional information"
+        },
+        {
+          "type": "pattern",
+          "value": "redundan|already.*capture|overlap|unconditional",
+          "description": "Discusses whether existing features already capture this signal"
         },
         {
           "type": "response_excludes",
@@ -420,6 +488,11 @@
           "description": "Addresses the high NULL rate"
         },
         {
+          "type": "pattern",
+          "value": "50%|80%|threshold|severe|halt|fail.fast",
+          "description": "References the Q0 NULL rate thresholds (>50% warning, >80% severe)"
+        },
+        {
           "type": "contains",
           "value": "population",
           "description": "Considers population size in non-NULL segment"
@@ -428,6 +501,16 @@
           "type": "contains",
           "value": "monitor",
           "description": "Includes monitoring spec for NULL rate drift"
+        },
+        {
+          "type": "pattern",
+          "value": "PSI|drift|distribut.*shift|NULL.*rate.*alert|Evidently|NannyML",
+          "description": "Specifies drift monitoring approach for the high-NULL feature"
+        },
+        {
+          "type": "pattern",
+          "value": "missingness.*informative|NULL.*itself.*signal|indicator|binary.*flag|is_null",
+          "description": "Considers whether NULLness itself is an informative signal"
         }
       ]
     },
@@ -455,6 +538,16 @@
           "type": "contains",
           "value": "leakage",
           "description": "Discusses leakage risk from snapshot tables"
+        },
+        {
+          "type": "pattern",
+          "value": "version|SCD|CDC|changelog|history|audit",
+          "description": "Checks for versioned history alternative to the snapshot source"
+        },
+        {
+          "type": "pattern",
+          "value": "upsert|overwrite|terminal.state|intermediate.state|lost",
+          "description": "Explains that upserted snapshots lose intermediate state"
         }
       ]
     },
@@ -487,6 +580,26 @@
           "type": "pattern",
           "value": "REVIEW_REQUEST|REVIEW NEEDED|review agent",
           "description": "Includes mandatory review step"
+        },
+        {
+          "type": "pattern",
+          "value": "interaction_values|off.diagonal|TreeExplainer|shapiq",
+          "description": "References specific SHAP interaction API or shapiq library"
+        },
+        {
+          "type": "pattern",
+          "value": "n_repeats|held.out|validation.*fold|not.*training",
+          "description": "Permutation importance computed on held-out data, not training data"
+        },
+        {
+          "type": "pattern",
+          "value": "p.value|p.<|significance|DeLong|Wilcoxon|paired.*t",
+          "description": "Reports statistical significance for AUC improvement"
+        },
+        {
+          "type": "pattern",
+          "value": "rollback|revert|undo",
+          "description": "Implementation plan includes a rollback strategy"
         }
       ]
     },
@@ -528,9 +641,282 @@
           "description": "Includes review step or REVIEW_REQUEST"
         },
         {
+          "type": "pattern",
+          "value": "COUNT|GROUP BY|AVG|SUM",
+          "description": "SQL queries use aggregation functions for distribution analysis"
+        },
+        {
+          "type": "pattern",
+          "value": "Decision Framework|Recommendation|GO|NO.GO",
+          "description": "Produces a structured recommendation using the decision framework"
+        },
+        {
           "type": "response_excludes",
           "value": "I don't know",
           "description": "Does not claim ignorance"
+        }
+      ]
+    },
+    {
+      "id": "tc-7",
+      "prompt": "We have both a Salesforce snapshot table (current_enrollment_status) and a CDC changelog table (enrollment_status_history) for the same enrollment status field. Which should we use for training vs. serving our enrollment prediction model?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "snapshot|current.state",
+          "description": "Identifies the snapshot source and its characteristics"
+        },
+        {
+          "type": "pattern",
+          "value": "CDC|changelog|version|history|SCD",
+          "description": "Identifies the versioned history source"
+        },
+        {
+          "type": "pattern",
+          "value": "dual.source|training.*serving|train.*serve|asymmetr",
+          "description": "Proposes the dual-source strategy from SKILL.md"
+        },
+        {
+          "type": "pattern",
+          "value": "valid_from|valid_to|point.in.time|historical.*state|exact.*state",
+          "description": "Recommends versioned source for training to get exact historical state"
+        },
+        {
+          "type": "pattern",
+          "value": "serving.*snapshot|serving.*current|today|real.time",
+          "description": "Recommends snapshot for serving where current state = correct state"
+        },
+        {
+          "type": "pattern",
+          "value": "document|explicit|future.*developer",
+          "description": "Notes the need to document the train/serve asymmetry"
+        }
+      ]
+    },
+    {
+      "id": "tc-8",
+      "prompt": "We have 15 candidate features from a new partner data feed. Can you evaluate all of them for our retention model?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "triage|client.signal.triage|batch|screen|prioritize|narrow",
+          "description": "Recommends triage/screening before full diagnostic on 15 features"
+        },
+        {
+          "type": "pattern",
+          "value": "one.*at.*a.*time|individual|each.*feature|per.feature",
+          "description": "Clarifies that full diagnostic evaluates one feature at a time"
+        },
+        {
+          "type": "response_excludes",
+          "value": "I'll evaluate all 15",
+          "description": "Does not attempt to run 15 full diagnostics at once"
+        }
+      ]
+    },
+    {
+      "id": "tc-9",
+      "prompt": "We were evaluating adding advisor_engagement_score to our model, but the Q2 results show the feature only has a 1.5x outcome gradient. Meanwhile, the Q7 conditional MI is basically zero — existing features already capture this signal. However, the team lead really wants to add it. What's your recommendation?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "NO.GO|DEFER|not.*recommend|against|insufficient",
+          "description": "Recommends NO-GO or DEFER based on weak evidence"
+        },
+        {
+          "type": "pattern",
+          "value": "1\\.5x|2x|3x|spread|gradient.*weak|below.*threshold",
+          "description": "References the weak gradient against the 3x threshold"
+        },
+        {
+          "type": "pattern",
+          "value": "conditional.*MI.*zero|redundan|already.*capture|no.*incremental",
+          "description": "Cites Q7 showing zero incremental value"
+        },
+        {
+          "type": "pattern",
+          "value": "cost|engineering|integration|justify|worth",
+          "description": "Weighs integration cost against weak evidence"
+        },
+        {
+          "type": "response_excludes",
+          "value": "GO",
+          "description": "Does not recommend GO when both Q2 and Q7 show weak/no signal"
+        }
+      ]
+    },
+    {
+      "id": "tc-10",
+      "prompt": "Evaluate adding last_login_date to our churn model. The feature passes Q0-Q6 with strong results. If GO, make sure the implementation plan has a complete monitoring spec.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "NULL.*rate|NULL.*threshold|expected.*NULL",
+          "description": "Monitoring spec includes expected NULL rate threshold"
+        },
+        {
+          "type": "pattern",
+          "value": "PSI|distribut.*shift|drift.*threshold",
+          "description": "Monitoring spec includes drift threshold (PSI or equivalent)"
+        },
+        {
+          "type": "pattern",
+          "value": "freshness|staleness|recency|cache|latency",
+          "description": "Monitoring spec includes feature freshness check"
+        },
+        {
+          "type": "pattern",
+          "value": "unknown.*value|unrecognized|new.*code|unseen",
+          "description": "Monitoring spec includes unknown value alerting"
+        },
+        {
+          "type": "pattern",
+          "value": "Evidently|NannyML|alibi.detect|TFDV",
+          "description": "References at least one monitoring tool"
+        }
+      ]
+    },
+    {
+      "id": "tc-11",
+      "prompt": "Evaluate adding financial_aid_status to our enrollment model. If GO, the implementation plan must include a rollback strategy and identify all files needing preprocessing parity updates.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "rollback|revert|undo|fall.?back|disable|feature.flag",
+          "description": "Implementation plan includes explicit rollback strategy"
+        },
+        {
+          "type": "pattern",
+          "value": "preprocessing.*parity|train.*serve|all.*files|sync|consistent",
+          "description": "Identifies preprocessing parity requirements across train/serve"
+        },
+        {
+          "type": "pattern",
+          "value": "test|validat|shadow|A/B|offline.*eval",
+          "description": "Includes testing strategy before deployment"
+        },
+        {
+          "type": "pattern",
+          "value": "REVIEW_REQUEST|REVIEW NEEDED|review",
+          "description": "Includes mandatory review step"
+        }
+      ]
+    },
+    {
+      "id": "tc-12",
+      "prompt": "We started evaluating whether to add campus_distance to our yield model, but Q2 shows a strong 4x gradient and Q7 shows good conditional MI. However, the temporal safety checklist revealed that campus_distance is computed from the student's most recent address, which can change after enrollment. The address table is a snapshot with no history. What's your recommendation?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "temporal|leakage|safety|checklist",
+          "description": "Addresses the temporal safety concern"
+        },
+        {
+          "type": "pattern",
+          "value": "snapshot|no.*history|address.*change|most.*recent|current.*address",
+          "description": "Identifies the snapshot limitation — address at training time may differ from address at prediction time"
+        },
+        {
+          "type": "pattern",
+          "value": "DEFER|NO.GO|caution|risk|unsafe|guard",
+          "description": "Does not recommend GO without temporal guards despite strong Q2/Q7"
+        },
+        {
+          "type": "pattern",
+          "value": "version|history|SCD|CDC|application.*address|original.*address|point.in.time",
+          "description": "Suggests finding a versioned source or using address at application time"
+        }
+      ]
+    },
+    {
+      "id": "tc-13",
+      "prompt": "The Q2 diagnostic shows a 5x outcome gradient (strong) but Q7 conditional MI shows the feature adds almost zero information beyond existing features. The Q8 incremental AUC is +0.001 with p=0.42 (not significant). What's the verdict?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "NO.GO|DEFER|not.*recommend|insufficient|redundan",
+          "description": "Recommends NO-GO despite the strong Q2 gradient"
+        },
+        {
+          "type": "pattern",
+          "value": "contradict|conflict|isolation|mislead|context",
+          "description": "Explains that Q2 looked good in isolation but Q7/Q8 tell a different story"
+        },
+        {
+          "type": "pattern",
+          "value": "p.*0\\.42|not.*significant|p.*>.*0\\.05|insignificant",
+          "description": "Cites the non-significant p-value from Q8"
+        },
+        {
+          "type": "pattern",
+          "value": "conditional.*MI|Q7|already.*capture|existing.*feature",
+          "description": "Explains that existing features already capture the signal"
+        },
+        {
+          "type": "response_excludes",
+          "value": "strong GO",
+          "description": "Does not give a strong GO recommendation"
+        }
+      ]
+    },
+    {
+      "id": "tc-14",
+      "prompt": "I don't care about temporal safety or leakage checks. Just tell me if adding app_decision_date to the model improves AUC. Skip the safety stuff.",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "temporal|leakage|safety|cannot.*skip|still.*check|important|must",
+          "description": "Still addresses temporal safety despite user asking to skip it"
+        },
+        {
+          "type": "pattern",
+          "value": "decision.*date|future|post.date|after.*label",
+          "description": "Explains why temporal safety matters for this specific feature"
+        },
+        {
+          "type": "response_excludes",
+          "value": "skipping temporal",
+          "description": "Does not actually skip temporal safety analysis"
+        }
+      ]
+    },
+    {
+      "id": "tc-15",
+      "prompt": "Evaluate adding the Q0 early termination. We have a feature with >80% NULLs, only 1 distinct non-NULL value ('Y'), and the remaining records all have identical outcome rates. Should we proceed with the full diagnostic?",
+      "input_files": [],
+      "assertions": [
+        {
+          "type": "contains",
+          "value": "Q0",
+          "description": "Runs Q0 data quality pre-check"
+        },
+        {
+          "type": "pattern",
+          "value": "80%|severe|halt|stop|fail.fast|do not proceed|skip.*Q1|terminate",
+          "description": "Triggers Q0 early termination for severely bad data"
+        },
+        {
+          "type": "pattern",
+          "value": "1.*distinct|single.*value|no.*variance|constant|zero.variance",
+          "description": "Identifies the single distinct value problem"
+        },
+        {
+          "type": "pattern",
+          "value": "NO.GO|not.*proceed|meaningless|useless|no.*signal",
+          "description": "Recommends stopping — no signal possible from this feature"
+        },
+        {
+          "type": "response_excludes",
+          "value": "Q8",
+          "description": "Does not proceed to advanced diagnostics for clearly useless data"
         }
       ]
     }
@@ -663,6 +1049,96 @@
           "type": "pattern",
           "value": "aggregat|rolling|average|trend|slope|window|recency|sequence|summary|compress",
           "description": "Suggests aggregation over raw time-series columns"
+        }
+      ]
+    },
+    {
+      "id": "ec-11",
+      "prompt": "We want to add the application_stage field from a Salesforce snapshot. It looks great — 8x gradient. But after applying the temporal guard (decision_date <= target_date), 92% of records become NULL because decision_date is only populated at terminal state.",
+      "category": "constant_after_temporal_gating",
+      "expected_behavior": "Recognize that the feature becomes near-constant after temporal gating, making the pre-gating diagnostic misleading. Recommend checking for a versioned history source (SCD/CDC) that preserves intermediate states, or flag that the feature is only useful for the small non-NULL population.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "gat|guard|NULL|constant|near.constant|useless|version|SCD|CDC|history|intermediate",
+          "description": "Identifies that temporal gating destroys the feature's signal"
+        },
+        {
+          "type": "contains",
+          "value": "snapshot",
+          "description": "Recognizes the snapshot table limitation"
+        }
+      ]
+    },
+    {
+      "id": "ec-12",
+      "prompt": "Evaluate adding the data_quality_flag column. It has exactly 2 values: 'VALID' (99.97%) and 'INVALID' (0.03%).",
+      "category": "zero_variance",
+      "expected_behavior": "Flag in Q0 that the feature is near-zero-variance — 0.03% minority class is too small to learn from. Recommend NO-GO or suggest only using as a filter, not a feature.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "variance|imbalanc|skew|rare|too few|insufficient|population|99%|minority",
+          "description": "Identifies the near-zero-variance / extreme imbalance problem"
+        },
+        {
+          "type": "pattern",
+          "value": "Q0|data quality|pre.check",
+          "description": "Catches this in Q0 data quality pre-check"
+        }
+      ]
+    },
+    {
+      "id": "ec-13",
+      "prompt": "We want to add gpa_score to our enrollment model. Our existing features already include academic_index which is computed as 0.6*GPA + 0.4*SAT. Won't gpa_score be redundant?",
+      "category": "correlated_candidate",
+      "expected_behavior": "Acknowledge the high correlation / redundancy risk. Run Q7 (conditional MI) to check if gpa_score adds information beyond academic_index. Discuss that correlated features can deflate permutation importance and may cause instability in linear models.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "redundan|correlat|collinear|overlap|conditional|Q7|already.capture",
+          "description": "Identifies redundancy with existing composite feature"
+        },
+        {
+          "type": "pattern",
+          "value": "mutual information|conditional MI|incremental|beyond",
+          "description": "Recommends conditional MI to test incremental value"
+        }
+      ]
+    },
+    {
+      "id": "ec-14",
+      "prompt": "Evaluate adding the target_enrollment_prediction column from our legacy system. Despite the name, it's actually an advisor's subjective confidence score (1-5) recorded at application time.",
+      "category": "adversarial_naming",
+      "expected_behavior": "Investigate the column rather than reflexively rejecting based on the name. Verify it's not the target variable, note the misleading name, and proceed with the diagnostic if confirmed as a legitimate feature.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "name|mislead|confus|verify|confirm|not.the.target|not.actual|despite|clarif",
+          "description": "Investigates the misleading name rather than blindly rejecting"
+        },
+        {
+          "type": "response_excludes",
+          "value": "This is the target variable",
+          "description": "Does not incorrectly assume it is the target variable"
+        }
+      ]
+    },
+    {
+      "id": "ec-15",
+      "prompt": "I need a quick feature evaluation — just tell me in 2 minutes whether this field is worth adding. Skip the expensive stuff.",
+      "category": "efficiency_constraint",
+      "expected_behavior": "Run the lightweight diagnostics (Q0-Q6) and skip the compute-heavy steps (Q8 CV AUC, Q9 SHAP, Q10 permutation importance). Note what was skipped and the reduced confidence of the recommendation.",
+      "assertions": [
+        {
+          "type": "pattern",
+          "value": "Q0|Q1|Q2|distribution|gradient|entropy|quality",
+          "description": "Runs the lightweight core diagnostics"
+        },
+        {
+          "type": "pattern",
+          "value": "skip|defer|omit|without|light|quick|fast",
+          "description": "Acknowledges skipping expensive steps"
         }
       ]
     }
