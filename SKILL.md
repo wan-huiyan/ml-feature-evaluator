@@ -1,7 +1,7 @@
 ---
 name: ml-feature-evaluator
-version: 2.1.0
-date: 2026-03-24
+version: 2.2.0
+date: 2026-03-30
 author: wan-huiyan
 description: >
   Structured go/no-go evaluation for adding a new feature or data source to a production ML model.
@@ -225,9 +225,19 @@ mean_importances = np.mean(all_importances, axis=0)
 
 Before recommending integration, check for temporal leakage — using future information to predict present outcomes.
 
-1. **Is the source table a snapshot or historical?** CRM tables (Salesforce, HubSpot) are often current-state snapshots, not event logs. A field showing "Accepted" today may not have been "Accepted" at the historical training date.
+1. **Classify the source into one of three types** before designing temporal guards:
 
-2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`.
+   | Type | Description | Temporal Guard Strategy |
+   |------|-------------|------------------------|
+   | **Current-state snapshot** | One row per entity, latest state only. CRM tables (Salesforce, HubSpot) are often this. | Gate with date columns (`decision_date <= target_date`). Conservative: intermediate states are lost. |
+   | **Event log / append-only** | One row per event, immutable once written. Behavioral tracking, application logs. | Filter by `event_date <= target_date`. No state reconstruction needed. |
+   | **Versioned history** | Multiple rows per entity with validity windows. SCD Type 2, CDC, changelogs, audit tables. | Range query: `valid_from <= target_date AND (valid_to IS NULL OR valid_to > target_date)`. Provides exact point-in-time state. |
+
+   A field showing "Accepted" today may not have been "Accepted" at a historical training date. Snapshot tables cannot reconstruct intermediate states; versioned history tables can. **Always check whether a versioned history source exists for the same data before relying on snapshot temporal guards** — information gain measurements from snapshot data may be understated due to guard-induced information loss.
+
+   When both a snapshot and versioned source exist for the same entity, consider a **dual-source strategy**: use the versioned source for training (exact historical state) and the snapshot for serving (real-time current state). This is safe when serving always uses `target_date = today`, where the snapshot's current state IS the correct point-in-time state. Document the asymmetry explicitly so future developers understand why training and serving SQL differ.
+
+2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`. For versioned history sources, use the validity window columns instead (`valid_from`/`valid_to` or equivalent).
 
 3. **Do the date columns mean what they say?** "Last modified" dates often record the most recent touch, not the initial event. Validate by checking ordering against related events. If anomalous ordering is common (>10%), treat as "last modified" and use conservatively.
 
@@ -379,7 +389,11 @@ When temporal guards gate on a date column that is NULL for most records in a ca
 
 When a record transitions through states (e.g., Accepted → Deposited → Withdrawn), a snapshot table only shows the terminal state. At a target_date between deposit and withdrawal, the temporal guard may hide the withdrawal (decision_date > target_date), but the underlying status is already "Withdrawn" — there's no way to recover the "Accepted & Deposited" state the record passed through. These students get classified by whatever the fallback produces (often "In Process" or "Unknown").
 
-**Rule:** Document populations affected by this gap. If the count is small and the fallback is conservative (under-counts, never over-counts), accept it. If large, consider alternative temporal anchors.
+**Rule:** Document populations affected by this gap. If the count is small and the fallback is conservative (under-counts, never over-counts), accept it. If large, look for a **versioned history source** (SCD Type 2, CDC changelog, audit table) that tracks the same entity. If one exists, it provides exact point-in-time state via validity window range queries — eliminating the gap entirely.
+
+**Identifying versioned sources:** Check sibling datasets, data warehouse layers, or ask the data team. Common patterns: tables with `valid_from`/`valid_to` or `effective_date`/`end_date` columns, tables with significantly more rows than unique entities (multiple versions per entity), or tables with `version_key` or `_version` suffixes.
+
+**Join key caution:** Versioned sources often originate from a different system and may use different identifiers than the snapshot. Don't assume the obvious ID column is the join key — test ALL ID-like columns in both tables for overlap before concluding a join is impossible. A "zero overlap" finding on one column should trigger checking other columns, not concluding "no bridge exists."
 
 ### Explicit Code Sets vs Wildcard/Prefix Matching
 
@@ -459,7 +473,9 @@ Replace only when sources capture truly identical information. When they capture
 - **Skipping coverage gap analysis:** The most common mistake. A new source looks amazing in isolation but adds nothing over existing features.
 - **Trusting field names:** "application_status" might mean current status, historical status, or something else entirely. Always validate against raw data and documentation.
 - **Guessing code meanings from abbreviations:** AF doesn't mean "Application Filed" — it means "Accepted, Pending Final Transcript." Cross-reference against client documentation.
-- **Assuming snapshot tables have history:** If the table gets upserted, yesterday's values are gone. Check for incremental/history variants, and validate whether they actually preserve history.
+- **Assuming snapshot tables have history:** If the table gets upserted, yesterday's values are gone. Check sibling datasets for versioned history (SCD, CDC, changelogs, audit tables) before accepting the snapshot's temporal limitations. A "zero overlap" on one join key doesn't mean no bridge exists — test ALL ID-like columns before concluding.
+- **Evaluating features from snapshots without checking for versioned alternatives:** Information gain and coverage gap measurements from snapshot data may be understated due to temporal guard information loss. If a versioned source exists, re-run the evaluation using exact point-in-time state — the results may be significantly different.
+- **Re-export noise in versioned history tables:** Consecutive rows with identical state (but different validity timestamps) are often system re-exports, not real transitions. Filter with `LAG()` when computing transition-based features like status change counts.
 - **Forgetting to monitor for new codes:** Explicit code sets are safe until the client adds a new status code that silently falls to the default. Always add runtime logging for unrecognized values.
 - **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "behavioral source primary, CRM fallback" when the CRM covers more students.
 - **Flagging intermediate-milestone ordering anomalies as leakage:** Check ordering against the *label*, not against other intermediate events in the pipeline.
