@@ -137,12 +137,14 @@ Thresholds in **bold** are grounded in published sources. Thresholds in *italic*
 | Permutation importance | *>2σ from zero across folds* | Heuristic; cf. [scikit-learn docs](https://scikit-learn.org/stable/modules/permutation_importance.html) |
 | Temporal safety | **All guards pass** | [Kapoor & Narayanan (2023)](https://www.cell.com/patterns/fulltext/S2666-3899(23)00159-9) |
 
+**Note:** All thresholds above are heuristic starting points, not universal cutoffs. Calibrate to your domain, data scale, and pipeline complexity. A 2x gradient may be transformative in a low-signal domain; a 5x gradient may be insufficient if integration cost is extreme.
+
 ## Temporal Safety
 
 The most commonly missed failure mode in feature evaluation. The skill runs a 9-point checklist:
 
-1. Snapshot vs historical table detection
-2. Date column validation for temporal guards
+1. **3-tier source classification** — snapshot (current-state only), event log (append-only), or versioned history (validity windows) — each with its own temporal guard strategy. When both snapshot and versioned sources exist, use versioned for training (exact state) and snapshot for serving (real-time).
+2. Date column validation for temporal guards (or validity window columns for versioned sources)
 3. "Last modified" vs "initial event" date disambiguation
 4. NULL and future-date handling
 5. **Leakage is relative to the label, not intermediate milestones** — the most commonly misdiagnosed issue
@@ -175,8 +177,11 @@ Patterns learned from production incidents:
 - **Category name mismatch** — old model expects `"Status A"`, new code emits `"Status – Active"`, XGBoost silently produces wrong predictions
 - **Schema declaration vs output SELECT drift** — SQL build fails at compile time
 - **Dead code from temporal gating** — explicit code sets match nobody because the temporal guard nullified the status; the fallback does all the work
+- **Snapshot tables lack history** — check for versioned history sources; test ALL ID-like columns for join overlap before concluding "no bridge"
+- **Explicit sets vs prefix matching** — safe today but silently misclassify future codes the client adds; add monitoring for unrecognized values
 - **Sentinel conflation** — two different meanings of a sentinel value in the fallback path
 - **COALESCE source priority** — coverage determines priority, not "behavioral > CRM"
+- **Re-export noise in versioned history** — filter consecutive identical-state rows with `LAG()` for transition-based features
 </details>
 
 ## Usage
@@ -242,6 +247,7 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 ## Related Skills
 
+- **[client-signal-triage](https://github.com/wan-huiyan/client-signal-triage)** — When a client sends a batch of candidate signals. Triages into GO/DEFER/NO-GO by data availability, then routes GO candidates here for full diagnostic. Use triage first when evaluating >3 candidates.
 - **[ml-training-window-assessor](https://github.com/wan-huiyan/ml-training-window-assessor)** — When the question is "can we extend the training window?" rather than "should we add feature X?" Covers drift-aware validation, purged temporal CV with embargo, and XGBoost NaN handling.
 - **[agent-review-panel](https://github.com/wan-huiyan/agent-review-panel)** — Multi-agent adversarial review for high-stakes code and plan reviews.
 
@@ -249,6 +255,7 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 | Version | Changes |
 |---------|---------|
+| 2.2.0 | 3-tier source classification (snapshot/event-log/versioned-history), dual-source strategy, 8-bug checklist table, composability with `client-signal-triage`, heuristic threshold disclaimer, re-export noise guidance (schliff score: 73.8 → 82.5) |
 | 2.1.0 | Enrich trigger description, add eval suite, add composability metadata (schliff score: 54.9 → 73.8) |
 | 2.0.0 | SHAP interaction detection (Q9), permutation importance with CV (Q10), concept drift monitoring (Evidently/NannyML/alibi-detect), 10 open-source tools referenced, 13 research papers cited |
 | 1.1.0 | Research-grounded thresholds (Quinlan, Brown, DeLong, Siddiqi), provenance labeling, limitations section, review panel improvements |
@@ -256,7 +263,7 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 ## Acknowledgements
 
-Trigger accuracy and eval suite improved using [schliff](https://github.com/Zandereins/schliff) — an autonomous skill scoring and improvement framework (composite score: 54.9 → 73.8).
+Trigger accuracy and eval suite improved using [schliff](https://github.com/Zandereins/schliff) — an autonomous skill scoring and improvement framework (composite score: 54.9 → 82.5).
 
 ## License
 
