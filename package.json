@@ -1,0 +1,10 @@
+{
+  "name": "ml-feature-evaluator",
+  "version": "2.2.0",
+  "private": true,
+  "description": "Structured go/no-go evaluation for adding a new feature or data source to a production ML model. Runs a 12-step diagnostic (data quality, distribution, outcome gradient, bucket decomposition, coverage gaps, entropy with gain ratio, conditional MI, incremental CV AUC, SHAP interaction detection, permutation importance with CV), 9-point temporal safety checklist, concept drift monitoring, and produces a decision-backed implementation plan with monitoring spec.",
+  "scripts": {
+    "test": "node --test tests/*.test.mjs"
+  },
+  "type": "module"
+}
