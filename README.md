@@ -1,4 +1,5 @@
 # ML Feature Evaluator
+[![GitHub release](https://img.shields.io/github/v/release/wan-huiyan/ml-feature-evaluator)](https://github.com/wan-huiyan/ml-feature-evaluator/releases) [![Claude Code](https://img.shields.io/badge/Claude_Code-skill-orange)](https://claude.com/claude-code) [![license](https://img.shields.io/github/license/wan-huiyan/ml-feature-evaluator)](LICENSE) [![last commit](https://img.shields.io/github/last-commit/wan-huiyan/ml-feature-evaluator)](https://github.com/wan-huiyan/ml-feature-evaluator/commits)
 
 A [Claude Code](https://claude.com/claude-code) skill that answers "should we add this feature to the model?" with a structured, evidence-backed diagnostic — before you spend a week integrating something that adds no predictive value.
 
