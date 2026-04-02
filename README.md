@@ -256,15 +256,15 @@ The skill auto-triggers when you discuss new features, field expansions, new dat
 
 | Version | Changes |
 |---------|---------|
-| 2.2.0 | 3-tier source classification (snapshot/event-log/versioned-history), dual-source strategy, 8-bug checklist table, composability with `client-signal-triage`, heuristic threshold disclaimer, re-export noise guidance (schliff score: 73.8 → 82.5) |
-| 2.1.0 | Enrich trigger description, add eval suite, add composability metadata (schliff score: 54.9 → 73.8) |
+| 2.2.0 | 3-tier source classification (snapshot/event-log/versioned-history), dual-source strategy, 8-bug checklist table, composability with `client-signal-triage`, heuristic threshold disclaimer, re-export noise guidance |
+| 2.1.0 | Enrich trigger description, add eval suite, add composability metadata |
 | 2.0.0 | SHAP interaction detection (Q9), permutation importance with CV (Q10), concept drift monitoring (Evidently/NannyML/alibi-detect), 10 open-source tools referenced, 13 research papers cited |
 | 1.1.0 | Research-grounded thresholds (Quinlan, Brown, DeLong, Siddiqi), provenance labeling, limitations section, review panel improvements |
 | 1.0.0 | Initial release: 12-step diagnostic (Q0-Q8), temporal safety, decision framework, demo screenshots |
 
 ## Acknowledgements
 
-Trigger accuracy and eval suite improved using [schliff](https://github.com/Zandereins/schliff) — an autonomous skill scoring and improvement framework (composite score: 54.9 → 82.5).
+Trigger accuracy and eval suite improved using [schliff](https://github.com/Zandereins/schliff) — an autonomous skill scoring and improvement framework.
 
 ## License
 
