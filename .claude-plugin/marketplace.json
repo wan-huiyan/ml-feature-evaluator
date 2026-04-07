@@ -1,0 +1,16 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "wan-huiyan-ml-feature-evaluator",
+  "description": "Single-plugin marketplace for ml-feature-evaluator — Structured 12-step diagnostic for go/no-go feature evaluation in production ML pipelines.",
+  "owner": {
+    "name": "wan-huiyan"
+  },
+  "plugins": [
+    {
+      "name": "ml-feature-evaluator",
+      "source": "./plugins/ml-feature-evaluator",
+      "description": "Structured 12-step diagnostic for go/no-go feature evaluation in production ML pipelines.",
+      "version": "2.3.0"
+    }
+  ]
+}
