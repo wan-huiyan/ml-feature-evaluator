@@ -1,8 +1,12 @@
 ---
 name: ml-feature-evaluator
-version: 2.3.0
+version: 2.3.1
 date: 2026-04-16
 author: wan-huiyan
+# CHANGELOG 2.3.1 (2026-04-16) — Q6-pre generalisation (Barry U S89 playbook feedback):
+#   - Q6-pre: extended to cover tenure-encoded features in addition to stage-encoded.
+#     Progressors can hide in the "past-state" sentinel (e.g., 999 for already-submitted)
+#     just as easily as in NULL — the same stratification principle applies.
 # CHANGELOG 2.3.0 (2026-04-16) — Barry U S88 session frictions integrated:
 #   - Q2: event-attendance leakage subpattern (post-outcome event filter)
 #   - Q6-pre: stratify NULL bucket before rejecting on "0% in named bucket" finding
@@ -149,15 +153,19 @@ Run one query per signal type (e.g., Q4 for acceptance status, Q5 for deposit st
 
 If existing features already cover >80% of what the new source provides, the incremental value may not justify the integration cost. If coverage gaps are >20%, the new source sees things existing features miss — that's strong evidence for integration.
 
-### Q6-pre: Stratify NULL before rejecting on a "0% bucket" finding
+### Q6-pre: Stratify the hidden-progressor population before rejecting on a "0% bucket" finding
 
-**Purpose:** Avoid a false-negative verdict when temporal-gate SQL silently routes progressors to NULL.
+**Purpose:** Avoid a false-negative verdict when temporal-gate SQL silently routes progressors out of the named bucket and into NULL or a post-state sentinel.
 
-Before concluding a candidate feature has no signal based on a 0% outcome rate in a named transitional bucket (In-Process, Pending, Lead-New, Quote-Sent), **always stratify the NULL bucket** of the gating column.
+Before concluding a candidate feature has no signal based on a 0% outcome rate in a named transitional bucket (In-Process, Pending, Lead-New, Quote-Sent), **always stratify the population that looks like "not in this bucket."** The progressors — the students/customers/users who were in the bucket at T and then left it between T and label time — are the predictive signal you're looking for, and they've been routed somewhere that the base rate looks "uninteresting."
 
-**Why:** Current-state-snapshot training tables with temporal gates of the form `WHEN decision_date IS NULL AND status IN (pre-decision codes) THEN status WHEN decision_date <= target_date THEN status ELSE NULL END` route students/customers **who were pre-decision at target_date and then decided after target_date** to NULL, not the named pre-decision bucket. The named bucket becomes self-selected for non-progressors (tautologically 0% outcome). The progressors — the population the feature is meant to predict — hide in NULL.
+**Two encodings, one trap:**
 
-Run this sanity check:
+1. **Stage-encoded candidates (NULL routing).** Training tables with gates like `WHEN decision_date IS NULL AND status IN (pre-decision codes) THEN status WHEN decision_date <= target_date THEN status ELSE NULL END` route pre-decision-at-T-but-decided-after-T rows to **NULL**, not the named pre-decision bucket. The named bucket self-selects for non-progressors (tautologically 0% outcome). Stratify NULL by `has_submitted` / `decision_happened_after_T`.
+
+2. **Tenure-encoded candidates (post-state sentinel routing).** Candidates like `days_in_<state>_not_<next_state>` that use a sentinel (e.g., 999) for "not applicable" route **both** "never entered the state" AND "already past the state at T" into the same sentinel bucket. Progressors — rows that entered the state but left it between T and label time — land in the "already past" subpopulation of the sentinel, which typically has high outcome rate. Mixed with the "never entered" subpopulation (low outcome), the sentinel's pooled rate looks average and the real-value (still-in-state) bucket tautologically looks dead. Stratify the sentinel by `entered_state_ever` / `exited_state_before_T`.
+
+Run the appropriate sanity check (example for the stage-encoded case):
 
 ```sql
 SELECT
@@ -173,9 +181,11 @@ GROUP BY 1, 2, 3
 ORDER BY rate_pct DESC;
 ```
 
-If the NULL + submitted + decided-after-T bucket shows meaningful outcome rate, the candidate feature should be re-evaluated within that population, not the self-selected stuck population.
+For the tenure-encoded case, replace `stage_at_T` with `sentinel_vs_real` (CASE WHEN candidate = 999 THEN 'sentinel' ELSE 'real' END) and add a `sentinel_reason` dimension (`never_entered_state` vs. `exited_before_T`).
 
-See sister skill: `null-bucket-hides-progressors-in-snapshot-training` for the full corrected-diagnostic pattern.
+**Decision:** If the stratified population (NULL + late-decided, or sentinel + exited-before-T) shows meaningfully different outcome rate from both the named bucket AND the other sentinel subpopulation, the candidate feature needs to be re-scoped — either evaluated within the hidden population, re-encoded to expose it (add a separate `exited_state_before_T` flag), or both.
+
+See sister skill: `null-bucket-hides-progressors-in-snapshot-training` for the full corrected-diagnostic pattern. (The sister skill is written for the NULL-routing case; the same stratification principle applies to the sentinel-routing variant above — just swap `stage_at_T IS NULL` for `candidate = <sentinel>` in the diagnostic query.)
 
 ### Q6: Information Gain (Entropy) with Gain Ratio
 **Purpose:** A single quantitative summary of how much the expansion helps, normalized for cardinality.
