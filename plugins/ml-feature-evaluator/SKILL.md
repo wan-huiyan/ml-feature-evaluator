@@ -1,8 +1,15 @@
 ---
 name: ml-feature-evaluator
-version: 2.2.0
-date: 2026-03-30
+version: 2.3.0
+date: 2026-04-16
 author: wan-huiyan
+# CHANGELOG 2.3.0 (2026-04-16) — Barry U S88 session frictions integrated:
+#   - Q2: event-attendance leakage subpattern (post-outcome event filter)
+#   - Q6-pre: stratify NULL bucket before rejecting on "0% in named bucket" finding
+#   - Temporal Safety §1: dedup-query verification for upsert vs append mode
+#   - Q8: multi-feature bundle recalibration table + per-feature SHAP rank expectations
+#   - Cross-refs added to sister skills: null-bucket-hides-progressors-in-snapshot-training,
+#     sf-bq-upsert-verify-before-createddate-gate, sentinel-real-disjunction-clamp
 description: >
   Structured go/no-go evaluation for adding a new feature or data source to a production ML model.
   Triggers when the user asks any of these (or close variations):
@@ -118,6 +125,8 @@ What you're looking for: a monotonic or near-monotonic gradient with at least 3x
 
 **Leakage plausibility ceiling:** If the spread is >10x, or any single category has >95% outcome rate while the base rate is <30%, flag for leakage investigation before celebrating. Implausibly strong gradients often indicate the feature encodes information from after the label event (Kaufman, Rosset & Perlich, KDD 2011). Run the temporal safety checklist with extra scrutiny before proceeding. A legitimate >10x spread is possible (e.g., deposited vs. rejected students) but should be explainable by domain knowledge.
 
+**Event-attendance / interaction-feature subpattern (common leakage trap):** When the candidate encodes attendance at an event or interaction (campaign_member, meeting attendance, RSVP, event_signup, workshop participation), explicitly filter for **post-outcome events** in Q1 before running Q2. Examples: a university predicting enrollment should exclude orientation, welcome, move-in, and new-student events — these are attended *after* enrollment by definition and retroactively "predict" the enrollment they came after. A SaaS product predicting churn should exclude post-churn offboarding-interview attendance. Run one query: `SELECT event_type, COUNT(*) FROM <source> WHERE status='Attended' GROUP BY event_type` and domain-check each type for temporal position relative to the label event. Apply the filter as a SQL `NOT REGEXP_CONTAINS` on the training-time CTE, not just in analysis — otherwise the filter won't exist in production. Typical impact: filters 1-3% of "Attended" rows but the rows removed are precisely the highest-outcome-rate ones; can turn a 6x apparent gradient into a true 3-4x.
+
 ### Q3: Bucket Decomposition
 **Purpose:** Quantify how much information is hidden inside the current lumped bucket.
 
@@ -139,6 +148,34 @@ This is the most important and most often skipped step. For each signal the new 
 Run one query per signal type (e.g., Q4 for acceptance status, Q5 for deposit status).
 
 If existing features already cover >80% of what the new source provides, the incremental value may not justify the integration cost. If coverage gaps are >20%, the new source sees things existing features miss — that's strong evidence for integration.
+
+### Q6-pre: Stratify NULL before rejecting on a "0% bucket" finding
+
+**Purpose:** Avoid a false-negative verdict when temporal-gate SQL silently routes progressors to NULL.
+
+Before concluding a candidate feature has no signal based on a 0% outcome rate in a named transitional bucket (In-Process, Pending, Lead-New, Quote-Sent), **always stratify the NULL bucket** of the gating column.
+
+**Why:** Current-state-snapshot training tables with temporal gates of the form `WHEN decision_date IS NULL AND status IN (pre-decision codes) THEN status WHEN decision_date <= target_date THEN status ELSE NULL END` route students/customers **who were pre-decision at target_date and then decided after target_date** to NULL, not the named pre-decision bucket. The named bucket becomes self-selected for non-progressors (tautologically 0% outcome). The progressors — the population the feature is meant to predict — hide in NULL.
+
+Run this sanity check:
+
+```sql
+SELECT
+  stage_at_T,
+  has_submitted,
+  decision_happened_after_T,  -- derived from current decision_date > target_date
+  COUNT(*) AS n,
+  SUM(label) AS outcomes,
+  AVG(label) * 100 AS rate_pct
+FROM features
+WHERE target_date = '<your_T>'
+GROUP BY 1, 2, 3
+ORDER BY rate_pct DESC;
+```
+
+If the NULL + submitted + decided-after-T bucket shows meaningful outcome rate, the candidate feature should be re-evaluated within that population, not the self-selected stuck population.
+
+See sister skill: `null-bucket-hides-progressors-in-snapshot-training` for the full corrected-diagnostic pattern.
 
 ### Q6: Information Gain (Entropy) with Gain Ratio
 **Purpose:** A single quantitative summary of how much the expansion helps, normalized for cardinality.
@@ -185,6 +222,17 @@ Q0-Q7 are information-theoretic proxies. Q8 is the ground truth: train the model
 - Delta AUC negative → the feature hurts performance (possible noise injection or feature collision). NO-GO.
 
 **When to skip Q8:** If the candidate feature requires substantial pipeline work just to *create* the training data with the feature included (e.g., new SQL joins, new temporal guards, new preprocessing), Q8 may not be feasible as a quick diagnostic. In that case, rely on Q0-Q7 and note that Q8 was deferred. But if the data is readily available (e.g., you already have the column, you just haven't used it), always run Q8 — it takes minutes and provides definitive evidence.
+
+**Multi-feature bundle recalibration** — when a retrain ships multiple features at once (cost-sensitive clients, batched releases), the single-feature AUC thresholds don't translate. For an N-feature bundle, use these adjustments:
+
+| Bundle size | Expected ceiling (sum of single-feature Q8 estimates) | Promotion floor |
+|---|---|---|
+| 1 feature | Per-feature threshold (+0.005 typical) | +0.005 |
+| 2 features | Σ single-feature Q8, conservatively discounted 20-30% for conditional-MI overlap | +0.003 per feature, or +0.004 aggregate |
+| 3-5 features | Σ × 0.6-0.7 (heavier discount — overlap compounds) | +0.001-0.002 per feature aggregate |
+| 6+ features | Use isolated ablation retrains post-hoc; aggregate Q8 cannot attribute per feature | Subjective — typically aggregate +0.005 minimum to justify the bundle cycle |
+
+Always pair a multi-feature bundle with **per-feature SHAP rank expectations** for post-deploy attribution (e.g., "tenure top-20, A* variant top-10, ready_to_review top-40 or remove"). If per-feature SHAP rank falls below expectation, plan a lightweight pruning retrain (same model version, minor bump like v6.1.1) rather than a full rollback. This keeps the bundle economics intact while letting you retire features that didn't earn their feature-count slot.
 
 This step is inspired by mlxtend's SequentialFeatureSelector (5.1k GitHub stars) and the Boruta algorithm (1.6k stars), both of which use model-in-the-loop evaluation as the gold standard for feature value.
 
@@ -252,6 +300,24 @@ Before recommending integration, check for temporal leakage — using future inf
 
    A field showing "Accepted" today may not have been "Accepted" at a historical training date. Snapshot tables cannot reconstruct intermediate states; versioned history tables can. **Always check whether a versioned history source exists for the same data before relying on snapshot temporal guards** — information gain measurements from snapshot data may be understated due to guard-induced information loss.
 
+   **Verify the classification with a dedup query before trusting `created_date` / `modified_date` as a temporal gate.** Naming conventions are unreliable — the same ingestion tooling may produce upsert-mode for one SF entity and append-mode for another. Run:
+
+   ```sql
+   SELECT
+     (SELECT COUNT(*) FROM table) AS total_rows,
+     (SELECT COUNT(*) FROM (SELECT <pk_column>, COUNT(*) c FROM table GROUP BY 1 HAVING c > 1)) AS pk_dupes,
+     (SELECT COUNT(*) FROM (SELECT <natural_key_cols>, COUNT(*) c FROM table GROUP BY <natural_key_cols> HAVING c > 1)) AS natural_key_dupes
+   ```
+
+   Interpret:
+   - `pk_dupes = 0` AND low `natural_key_dupes` → **upsert-mode**; `created_date` = original record creation date (status updates overwrite in place). Retrospective status updates cause ADR-0009-class leakage but are consistent with other SF features.
+   - `pk_dupes > 0` → **append-mode** (changelog); `created_date` on each row = change-event timestamp. Gate semantics are historically precise.
+   - Document the finding in the feature SQL comment so the next reviewer doesn't re-ask.
+
+   See sister skill: `sf-bq-upsert-verify-before-createddate-gate` for the full verification protocol with SQL templates and regression-guard assertion.
+
+   When both a snapshot and versioned source exist for the same entity, consider a **dual-source strategy**: use the versioned source for training (exact historical state) and the snapshot for serving (real-time current state). This is safe when serving always uses `target_date = today`, where the snapshot's current state IS the correct point-in-time state. Document the asymmetry explicitly so future developers understand why training and serving SQL differ.
+
    When both a snapshot and versioned source exist for the same entity, consider a **dual-source strategy**: use the versioned source for training (exact historical state) and the snapshot for serving (real-time current state). This is safe when serving always uses `target_date = today`, where the snapshot's current state IS the correct point-in-time state. Document the asymmetry explicitly so future developers understand why training and serving SQL differ.
 
 2. **Are there date columns that can serve as temporal guards?** Look for `decision_date`, `created_date`, `modified_date`, `status_change_date`. Gate feature visibility on `date_column <= target_date`. For versioned history sources, use the validity window columns instead (`valid_from`/`valid_to` or equivalent).
@@ -302,7 +368,7 @@ If the diagnostic says yes, produce an implementation plan covering:
 2. **Temporal guards** — Exact SQL for date-based gating
 3. **Feature encoding** — How raw values map to model features (categorical levels, groupings)
 4. **Preprocessing parity** — Every file that needs updating (train, serve, config, data loader)
-5. **Display/reporting** — Feature names, data dictionary, client-facing labels
+5. **Display/reporting** — Feature names, data dictionary, client-facing labels. **Full-document audit:** When a new data source is added, grep ALL client-facing documents (PDFs, slides, reports) for every section that references data sources, signal counts, or source lists — not just the section you're editing. Common miss: updating an appendix but leaving the executive summary saying "two data sources" when there are now three.
 6. **Testing strategy** — How to validate before deploying (A/B, shadow scoring, offline eval)
 7. **Rollback plan** — How to revert if something goes wrong
 8. **Monitoring spec** — Post-deployment feature health contract (inspired by Uber's Model Excellence Scores and Google's TFDV):
@@ -348,7 +414,7 @@ Check for:
 1. **Preprocessing parity gaps** — Does the plan update ALL files that need to stay in sync?
 2. **Temporal leakage** — Are the proposed date guards actually safe? What edge cases are missed?
 3. **Missing rollback plan** — What happens if this breaks production scoring?
-4. **Display/label correctness** — Are all proposed display names validated against source documentation?
+4. **Display/label correctness** — Are all proposed display names validated against source documentation? Are ALL sections of client-facing documents consistent (executive summary, data sources, appendices)?
 5. **Population edge cases** — What happens for NULL values, missing joins, new codes that appear after deployment?
 6. **Testing gaps** — What isn't covered by the proposed testing strategy?
 7. **Scope creep** — Is the plan doing more than necessary? Could it be simpler?
@@ -419,4 +485,5 @@ Lundberg & Lee, NeurIPS 2017 (SHAP) · Muschalik et al., NeurIPS 2024 (shapiq) �
 - **Re-export noise in versioned history tables:** Consecutive rows with identical state (but different validity timestamps) are often system re-exports, not real transitions. Filter with `LAG()` when computing transition-based features like status change counts.
 - **Forgetting to monitor for new codes:** Explicit code sets are safe until the client adds a new status code that silently falls to the default. Always add runtime logging for unrecognized values.
 - **Putting the lower-coverage source first in COALESCE:** Coverage determines priority. Don't default to "behavioral source primary, CRM fallback" when the CRM covers more students.
+- **Updating appendix but not body of client docs:** When adding a new data source, grep the entire document generator for "data source", source counts ("two", "three"), and source names. Executive summaries, methodology sections, and appendices must all be consistent. A client seeing "two data sources" on page 1 and Snowflake on page 8 loses trust.
 - **Flagging intermediate-milestone ordering anomalies as leakage:** Check ordering against the *label*, not against other intermediate events in the pipeline.
