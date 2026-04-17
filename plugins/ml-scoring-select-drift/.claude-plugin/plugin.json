@@ -1,0 +1,20 @@
+{
+  "name": "ml-scoring-select-drift",
+  "description": "Diagnose \"KeyError: ['feat_a', 'feat_b', ...] not in index\" in ML scoring/inference pipelines immediately after a feature-bundle retrain. Three cascading causes: (1) asymmetric loaders (training SELECT * vs scoring hardcoded SELECT), (2) silent `if col in df.columns` preprocessing guards, (3) Dataform incremental CREATE-TABLE-IF-NOT-EXISTS schema trap. Includes four permanent defense patterns and a CI parity-test spec.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Huiyan Wan"
+  },
+  "repository": "https://github.com/wan-huiyan/ml-feature-evaluator",
+  "license": "MIT",
+  "keywords": [
+    "ml",
+    "scoring-drift",
+    "retrain",
+    "feature-engineering",
+    "pandas-keyerror",
+    "dataform",
+    "incremental-schema",
+    "debugging"
+  ]
+}

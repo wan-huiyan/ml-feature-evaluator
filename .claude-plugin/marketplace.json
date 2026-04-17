@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "wan-huiyan-ml-feature-evaluator",
-  "description": "Single-plugin marketplace for ml-feature-evaluator — Structured 12-step diagnostic for go/no-go feature evaluation in production ML pipelines.",
+  "description": "Marketplace for ML feature lifecycle skills: go/no-go feature evaluation + post-retrain scoring-drift debugging.",
   "owner": {
     "name": "wan-huiyan"
   },
@@ -11,6 +11,12 @@
       "source": "./plugins/ml-feature-evaluator",
       "description": "Structured 12-step diagnostic for go/no-go feature evaluation in production ML pipelines.",
       "version": "2.3.0"
+    },
+    {
+      "name": "ml-scoring-select-drift",
+      "source": "./plugins/ml-scoring-select-drift",
+      "description": "Diagnose \"KeyError: [feat_a, ...] not in index\" after a retrain bundle. Covers asymmetric train/score loaders, silent if-col-in-df guards, and Dataform incremental CREATE-TABLE-IF-NOT-EXISTS schema trap. Four permanent defenses + CI parity-test spec.",
+      "version": "1.0.0"
     }
   ]
 }
